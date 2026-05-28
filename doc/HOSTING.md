@@ -118,7 +118,7 @@ sudo systemctl start nginx
 
 ```bash
 cd ~
-git clone https://github.com/YOUR_USERNAME/apoquiz.git
+git clone https://github.com/afmdevelopers/apoquiz.git
 cd apoquiz
 ```
 
