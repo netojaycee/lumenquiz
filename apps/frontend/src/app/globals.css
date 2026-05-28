@@ -1,0 +1,56 @@
+@import "tailwindcss";
+
+@theme {
+  /* Background & Surface */
+  --color-background: #0F0F13;
+  --color-surface: #1A1A24;
+  --color-surface-elevated: #222233;
+  --color-border: #2A2A3A;
+
+  /* Game state colors */
+  --color-correct: #22C55E;
+  --color-wrong: #EF4444;
+  --color-timer-warning: #F59E0B;
+  --color-timer-critical: #EF4444;
+
+  /* Accent (Blitz mode = electric blue) */
+  --color-blitz-accent: #3B82F6;
+
+  /* Text */
+  --color-text-primary: #FFFFFF;
+  --color-text-secondary: #9CA3AF;
+  --color-text-muted: #6B7280;
+
+  /* Typography */
+  --font-display: "system-ui", sans-serif;
+  --font-sans: "system-ui", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background-color: #0F0F13;
+  color: #ffffff;
+  font-family: var(--font-sans);
+}
+
+/* Scrollbar styling for dark theme */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #1A1A24;
+}
+::-webkit-scrollbar-thumb {
+  background: #2A2A3A;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3A3A4A;
+}

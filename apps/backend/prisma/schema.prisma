@@ -1,0 +1,220 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// ─── QUIZ SETUP ───────────────────────────────────────────────────────────────
+
+model Quiz {
+  id                   String    @id @default(cuid())
+  name                 String
+  description          String?
+  date                 DateTime?
+  status               String    @default("draft") // draft | ready | active | completed
+  defaultAudienceLevel String    @default("medium") // low | medium | high
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+  deletedAt            DateTime?
+
+  rounds   Round[]
+  sessions Session[]
+  teams    Team[]
+}
+
+model Team {
+  id        String    @id @default(cuid())
+  quizId    String
+  name      String
+  color     String
+  pin       String
+  joinCode  String?   @unique // 8-char single credential for team login
+  createdAt DateTime  @default(now())
+  deletedAt DateTime?
+
+  quiz         Quiz          @relation(fields: [quizId], references: [id])
+  members      TeamMember[]
+  answers      TeamAnswer[]
+  sessionTeams SessionTeam[]
+}
+
+model TeamMember {
+  id        String  @id @default(cuid())
+  teamId    String
+  name      String
+  avatarUrl String?
+
+  team Team @relation(fields: [teamId], references: [id])
+}
+
+model Round {
+  id                     String    @id @default(cuid())
+  quizId                 String
+  order                  Int
+  name                   String?
+  gameMode               String
+  questionCount          Int
+  timerSeconds           Int
+  pointsPerQuestion      Int
+  bonusPointsPerQuestion Int       @default(5)
+  status                 String    @default("pending") // pending | active | completed
+  audienceLevel          String    @default("medium") // low | medium | high
+  createdAt              DateTime  @default(now())
+  deletedAt              DateTime?
+
+  quiz      Quiz       @relation(fields: [quizId], references: [id])
+  questions Question[]
+}
+
+model Question {
+  id             String    @id @default(cuid())
+  roundId        String
+  order          Int
+  type           String // mcq | open | truefalse | fillinblank | image
+  text           String
+  mediaUrl       String?
+  correctAnswer  String
+  aliases        String    @default("[]")
+  clues          String    @default("[]") // JSON array of clue strings for Clue Reveal mode
+  fuzzyThreshold Float     @default(0.85)
+  points         Int
+  difficulty     String    @default("medium") // easy | medium | hard
+  status         String    @default("pending") // pending | active | revealed | completed
+  createdAt      DateTime  @default(now())
+  deletedAt      DateTime?
+
+  round               Round                        @relation(fields: [roundId], references: [id])
+  options             MCQOption[]
+  answers             TeamAnswer[]
+  audiencePredictions AudienceQuestionPrediction[]
+}
+
+model MCQOption {
+  id         String  @id @default(cuid())
+  questionId String
+  label      String // A | B | C | D
+  text       String
+  isCorrect  Boolean @default(false)
+
+  question Question @relation(fields: [questionId], references: [id])
+}
+
+// ─── SESSION (LIVE EVENT) ──────────────────────────────────────────────────────
+
+model Session {
+  id                String    @id @default(cuid())
+  quizId            String
+  status            String    @default("pending") // pending | lobby | active | ... | session_end | completed
+  currentRoundId    String?
+  currentQuestionId String?
+  sessionCode       String?   @unique // 6-char human-readable code — all roles use this to join
+  createdAt         DateTime  @default(now())
+  endedAt           DateTime?
+
+  quiz             Quiz                      @relation(fields: [quizId], references: [id])
+  sessionTeams     SessionTeam[]
+  audienceMembers  AudienceMember[]
+  roundPredictions AudienceRoundPrediction[]
+}
+
+model SessionTeam {
+  id          String  @id @default(cuid())
+  sessionId   String
+  teamId      String
+  score       Int     @default(0)
+  roundScores String  @default("{}")
+  rank        Int?
+  connected   Boolean @default(false)
+  socketId    String?
+
+  session Session @relation(fields: [sessionId], references: [id])
+  team    Team    @relation(fields: [teamId], references: [id])
+}
+
+model TeamAnswer {
+  id              String   @id @default(cuid())
+  questionId      String
+  teamId          String
+  sessionId       String
+  submittedAnswer String
+  isCorrect       Boolean
+  pointsEarned    Int
+  timeRemaining   Int
+  submittedAt     DateTime @default(now())
+
+  question Question @relation(fields: [questionId], references: [id])
+  team     Team     @relation(fields: [teamId], references: [id])
+}
+
+// ─── AUDIENCE ─────────────────────────────────────────────────────────────────
+
+model AudienceMember {
+  id          String   @id @default(cuid())
+  sessionId   String
+  fullName    String
+  fingerprint String
+  totalPoints Int      @default(0)
+  joinedAt    DateTime @default(now())
+  connected   Boolean  @default(true)
+  socketId    String?
+
+  session             Session                      @relation(fields: [sessionId], references: [id])
+  roundPredictions    AudienceRoundPrediction[]
+  questionPredictions AudienceQuestionPrediction[]
+  tfAnswers           AudienceTFAnswer[]
+  interactions        AudienceInteraction[]
+}
+
+model AudienceRoundPrediction {
+  id               String    @id @default(cuid())
+  audienceMemberId String
+  sessionId        String
+  roundId          String
+  predictedRanking String
+  pointsEarned     Int       @default(0)
+  resolvedAt       DateTime?
+
+  member  AudienceMember @relation(fields: [audienceMemberId], references: [id])
+  session Session        @relation(fields: [sessionId], references: [id])
+}
+
+model AudienceQuestionPrediction {
+  id               String    @id @default(cuid())
+  audienceMemberId String
+  questionId       String
+  predictedTeamId  String
+  isCorrect        Boolean?
+  pointsEarned     Int       @default(0)
+  resolvedAt       DateTime?
+
+  member   AudienceMember @relation(fields: [audienceMemberId], references: [id])
+  question Question       @relation(fields: [questionId], references: [id])
+}
+
+model AudienceTFAnswer {
+  id               String   @id @default(cuid())
+  audienceMemberId String
+  questionId       String
+  answer           Boolean
+  isCorrect        Boolean?
+  pointsEarned     Int      @default(0)
+
+  member AudienceMember @relation(fields: [audienceMemberId], references: [id])
+}
+
+model AudienceInteraction {
+  id           String   @id @default(cuid())
+  memberId     String
+  sessionId    String
+  questionId   String?
+  type         String // prediction | bet | ghost_answer
+  activity     String // round_ranking | clue_depth | performance_bet | etc.
+  payload      String // JSON blob
+  pointsEarned Int      @default(0)
+  isCorrect    Boolean  @default(false)
+  submittedAt  DateTime @default(now())
+
+  member AudienceMember @relation(fields: [memberId], references: [id])
+}
