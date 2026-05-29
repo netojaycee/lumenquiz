@@ -16,3 +16,11 @@ Thumbs.db
 notes/
 docs/
 apps/desktop/
+
+.idea/
+
+# Local AI agent instructions/config
+AGENTS.md
+CLAUDE.md
+.agents/
+.claude/
