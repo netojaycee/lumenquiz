@@ -69,18 +69,10 @@ pnpm exec prisma migrate deploy
 
 echo "==> Restarting PM2 process: $PM2_NAME"
 if [[ "$PM2_USE_SUDO" == "1" ]]; then
-  if sudo pm2 describe "$PM2_NAME" >/dev/null 2>&1; then
-    sudo pm2 restart "$PM2_NAME" --update-env
-  else
-    sudo pm2 start dist/main.js --name "$PM2_NAME"
-  fi
+  sudo pm2 restart "$PM2_NAME" --update-env || sudo pm2 start dist/main.js --name "$PM2_NAME"
   sudo pm2 save
 else
-  if pm2 describe "$PM2_NAME" >/dev/null 2>&1; then
-    pm2 restart "$PM2_NAME" --update-env
-  else
-    pm2 start dist/main.js --name "$PM2_NAME"
-  fi
+  pm2 restart "$PM2_NAME" --update-env || pm2 start dist/main.js --name "$PM2_NAME"
   pm2 save
 fi
 
