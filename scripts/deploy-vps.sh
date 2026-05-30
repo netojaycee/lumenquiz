@@ -75,7 +75,6 @@ if [[ "$PM2_USE_SUDO" == "1" ]]; then
     sudo pm2 start dist/main.js --name "$PM2_NAME"
   fi
   sudo pm2 save
-  sudo pm2 status "$PM2_NAME"
 else
   if pm2 describe "$PM2_NAME" >/dev/null 2>&1; then
     pm2 restart "$PM2_NAME" --update-env
@@ -83,7 +82,6 @@ else
     pm2 start dist/main.js --name "$PM2_NAME"
   fi
   pm2 save
-  pm2 status "$PM2_NAME"
 fi
 
 echo "==> Deployment complete"
