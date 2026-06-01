@@ -29,6 +29,7 @@ import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { storage } from '@/lib/storage'
 import { useSocketStore } from '@/stores/useSocketStore'
+import { ReconnectOverlay } from '@/components/shared/ReconnectOverlay'
 import { useScreenStore } from '@/stores/useScreenStore'
 import {
   MODERATOR_EVENTS,
@@ -101,7 +102,7 @@ export function ModeratorClient(): React.ReactElement {
   const sessionId = useSessionId()
   const router = useRouter()
 
-  const { connect, emit, connected } = useSocketStore()
+  const { connect, emit, connected, midSessionDisconnect } = useSocketStore()
   const {
     sessionStatus,
     scores,
@@ -138,6 +139,7 @@ export function ModeratorClient(): React.ReactElement {
   const [sidebarTab, setSidebarTab] = useState<'scores' | 'audience'>('scores')
   const [qrOnScreen, setQrOnScreen] = useState(false)
   const [rulesOnScreen, setRulesOnScreen] = useState(false)
+  const [pendingAnswer, setPendingAnswer] = useState<{ answer: string; teamName: string; teamColor: string; isBonus: boolean } | null>(null)
 
   // Cloud sync state (shown at session end)
   const [showSyncPanel, setShowSyncPanel] = useState(false)
@@ -219,6 +221,10 @@ export function ModeratorClient(): React.ReactElement {
     socket.on(SERVER_EVENTS.AUDIENCE_INTERACTION_UPDATE, updateAudienceInteraction)
     socket.on(SERVER_EVENTS.AUDIENCE_INTERACTION_CLOSE, closeAudienceInteraction)
 
+    socket.on(SERVER_EVENTS.TILEBLITZ_PENDING_ANSWER, (data: { teamName: string; teamColor: string; answer: string; isBonus: boolean }) => {
+      setPendingAnswer(data)
+    })
+
     const timeout = setTimeout(() => {
       setPhase((current) => (current === 'connected' ? 'connected' : 'failed'))
     }, 10000)
@@ -232,6 +238,7 @@ export function ModeratorClient(): React.ReactElement {
       socket.off('moderator:rounds', onRounds)
       socket.off('round:ready:summary', onReadySummary)
       // socket.off(SERVER_EVENTS.TILEBLITZ_BONUS_RESULT, onBonusResult)
+      socket.off(SERVER_EVENTS.TILEBLITZ_PENDING_ANSWER)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId])
@@ -240,11 +247,12 @@ export function ModeratorClient(): React.ReactElement {
   //   console.log('🔥 readyForSummary updated:', readyForSummary)
   // }, [readyForSummary])
 
-  // Reset readyForSummary when a new question opens
+  // Reset per-question state when a new question opens
   useEffect(() => {
     if (sessionStatus === SessionStatus.QUESTION_OPEN) {
       setReadyForSummary(false)
       setTimerPaused(false)
+      setPendingAnswer(null)
     }
   }, [sessionStatus])
 
@@ -282,6 +290,18 @@ export function ModeratorClient(): React.ReactElement {
     const id = setInterval(tick, 200)
     return () => clearInterval(id)
   }, [sessionStatus, clueState?.timerDeadline, clueState?.answeringTimerDeadline])
+
+  // Wake lock — moderator tablet must NEVER sleep during a live quiz
+  useEffect(() => {
+    if (typeof navigator === 'undefined' || !('wakeLock' in navigator)) return
+    let lock: WakeLockSentinel | null = null
+    if (connected) {
+      ;(navigator as any).wakeLock.request('screen').then((l: WakeLockSentinel) => {
+        lock = l
+      }).catch(() => {})
+    }
+    return () => { lock?.release().catch(() => {}) }
+  }, [connected])
 
   // ─── Moderator actions ────────────────────────────────────────────────────
 
@@ -364,6 +384,7 @@ const toggleTimer = useCallback(() => {
 
   const lockTileQuestion = useCallback(() => {
     emit(MODERATOR_EVENTS.TILEBLITZ_LOCK_QUESTION, { sessionId })
+    setPendingAnswer(null)
   }, [emit, sessionId])
 
   const openBonus = useCallback(() => {
@@ -468,6 +489,7 @@ const toggleTimer = useCallback(() => {
 
   return (
     <main className="bg-background flex min-h-screen flex-col">
+      <ReconnectOverlay show={midSessionDisconnect} variant="banner" />
       {/* Header */}
       <header className="border-border bg-surface flex items-center justify-between border-b px-6 py-3">
         <div className="flex items-center gap-3">
@@ -739,27 +761,54 @@ const toggleTimer = useCallback(() => {
                 </div>
 
                 {isTileBlitz ? (
-                  <div className="flex gap-3">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={lockTileQuestion}
-                      className="flex items-center gap-2"
+                  <div className="space-y-3">
+                    {/* Live pending answer monitor */}
+                    <div
+                      className={cn(
+                        'rounded-xl border px-4 py-3 transition-colors',
+                        pendingAnswer
+                          ? 'border-timer-warning/40 bg-timer-warning/10'
+                          : 'border-border bg-surface/50',
+                      )}
                     >
-                      <Lock className="h-4 w-4" />
-                      Lock Answer
-                    </Button>
-                    <p className="text-text-muted flex items-center text-sm">
-                      Active:{' '}
-                      <span
-                        style={{
-                          color: scores.find((s) => s.teamId === tileBlitz?.activeTeamId)?.teamColor,
-                        }}
-                        className="ml-1 font-semibold"
+                      <p className="text-text-muted mb-1 text-xs tracking-wide uppercase">
+                        {pendingAnswer?.isBonus ? 'Bonus — Current Answer' : 'Team Answer (live)'}
+                      </p>
+                      {pendingAnswer ? (
+                        <p
+                          className="text-lg font-bold"
+                          style={{ color: pendingAnswer.teamColor }}
+                        >
+                          {pendingAnswer.teamName}:{' '}
+                          <span className="text-white">{pendingAnswer.answer}</span>
+                        </p>
+                      ) : (
+                        <p className="text-text-muted text-sm italic">Waiting for input…</p>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-3">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={lockTileQuestion}
+                        className="flex items-center gap-2"
                       >
-                        {scores.find((s) => s.teamId === tileBlitz?.activeTeamId)?.teamName ?? '—'}
-                      </span>
-                    </p>
+                        <Lock className="h-4 w-4" />
+                        Lock Answer
+                      </Button>
+                      <p className="text-text-muted flex items-center text-sm">
+                        Active:{' '}
+                        <span
+                          style={{
+                            color: scores.find((s) => s.teamId === tileBlitz?.activeTeamId)?.teamColor,
+                          }}
+                          className="ml-1 font-semibold"
+                        >
+                          {scores.find((s) => s.teamId === tileBlitz?.activeTeamId)?.teamName ?? '—'}
+                        </span>
+                      </p>
+                    </div>
                   </div>
                 ) : (
                   <p className="text-text-muted text-sm">Waiting for team answers…</p>

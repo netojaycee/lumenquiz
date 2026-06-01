@@ -144,11 +144,20 @@ export const useAudienceStore = create<AudienceStore>((set) => ({
 
   closeAudienceInteraction: () => set({ activeInteraction: null }),
 
-  submitInteraction: (payload) => set((s) => ({
-    hasSubmittedInteraction: true,
-    hasPredicted: s.activeInteraction?.type === AudienceInteractionType.PREDICTION ? true : s.hasPredicted,
-    predictionTeamId: s.activeInteraction?.type === AudienceInteractionType.PREDICTION ? (payload?.predictedTeamId ?? s.predictionTeamId) : s.predictionTeamId,
-  })),
+  submitInteraction: (payload) => set((s) => {
+    // Determine if this is a prediction submission.
+    // Do NOT rely on s.activeInteraction at call-time — it may already be null if the
+    // AUDIENCE_INTERACTION_CLOSE event arrived just before this action ran (race condition).
+    // A predictedTeamId in the payload is the authoritative signal that this was a prediction.
+    const isPrediction =
+      payload?.predictedTeamId != null ||
+      s.activeInteraction?.type === AudienceInteractionType.PREDICTION
+    return {
+      hasSubmittedInteraction: true,
+      hasPredicted: isPrediction ? true : s.hasPredicted,
+      predictionTeamId: payload?.predictedTeamId ?? s.predictionTeamId,
+    }
+  }),
 
   updatePoints: (data) => set({
     totalPoints: data.totalPoints

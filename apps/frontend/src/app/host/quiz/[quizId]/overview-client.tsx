@@ -54,6 +54,8 @@ export function OverviewClient(): React.ReactElement {
   const serverUrl = networkInfo?.joinURL
     ? networkInfo.joinURL.replace(/\/join\/?$/, '')
     : null
+
+    console.log(networkInfo)
   const isCloud = serverUrl?.startsWith('https://')
 
   const quiz = currentQuiz?.id === quizId ? currentQuiz : null

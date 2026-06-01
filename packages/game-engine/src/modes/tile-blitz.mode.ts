@@ -18,7 +18,7 @@ export class TileBlitzMode implements GameModeStrategy {
   readonly rules = [
     'Teams play in rotating order — one team at a time',
     'The moderator selects a tile from the grid for the active team',
-    'Active team can change their MCQ selection freely until time runs out',
+    'Active team can change their Multiple Choice Question selection freely until time runs out',
     'Wrong answer? The moderator can open a bonus — first team to buzz wins the chance',
     'Selected tiles are locked — each question can only be played once',
   ]

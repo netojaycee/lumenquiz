@@ -140,6 +140,7 @@ export interface SessionCache {
 
   // Audience activity
   audienceVoteTally: Record<string, number> // teamId → vote count (ranked #1)
+  audienceVotePositionTally: Record<string, Record<number, number>> // teamId → {position → count}
   audienceEmojiCount: Record<string, number> // emoji → total count
 
   audienceLevel: AudienceEngagementLevel

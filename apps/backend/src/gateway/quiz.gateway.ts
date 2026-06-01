@@ -87,6 +87,12 @@ function getStrategy(gameMode: string): GameModeStrategy {
   return blitzMode
 }
 
+// ─── Vote broadcast throttle ──────────────────────────────────────────────────
+// Prevents a broadcast storm when many audience members vote within the same
+// short window (common at the start of a vote). Max one broadcast per 400 ms
+// per session; the final tally is always flushed when the timer fires.
+const voteThrottleTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
 // ─── Gateway ──────────────────────────────────────────────────────────────────
 
 @WebSocketGateway({ cors: { origin: '*' }, transports: ['websocket', 'polling'] })
@@ -297,6 +303,30 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     }
 
     await this.ensureCache(session)
+
+    // If this socket was already registered as a different team (e.g. user pressed logout
+    // then joined again without a real socket disconnect), clean up the old membership so the
+    // projector doesn't show a ghost "connected" indicator for the previous team.
+    const prev = client.data as SocketData | undefined
+    if (prev?.role === UserRole.TEAM && prev.teamId && prev.teamId !== team.id) {
+      void client.leave(`team:${prev.teamId}`)
+      if (prev.sessionId && prev.sessionId !== session.id) {
+        void client.leave(`session:${prev.sessionId}`)
+        void client.leave(`session:${prev.sessionId}:teams`)
+      }
+      void this.prisma.sessionTeam
+        .updateMany({
+          where: { teamId: prev.teamId, sessionId: prev.sessionId },
+          data: { connected: false, socketId: null },
+        })
+        .catch(() => undefined)
+      const prevCache = activeSessions.get(prev.sessionId ?? '')
+      if (prevCache) prevCache.connectedTeamIds.delete(prev.teamId)
+      this.server
+        .to(`session:${prev.sessionId}`)
+        .emit('team:disconnected', { teamId: prev.teamId })
+    }
+
     ;(client.data as SocketData) = { role: UserRole.TEAM, sessionId: session.id, teamId: team.id }
     await client.join([`session:${session.id}`, `session:${session.id}:teams`, `team:${team.id}`])
     await this.prisma.sessionTeam.updateMany({
@@ -431,6 +461,16 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
   // ─── Moderator: audience vote ─────────────────────────────────────────────────
 
+  // ─── session:leave — explicit client-initiated disconnect ────────────────────
+  // Fired by the frontend when a user clicks "logout". Runs the same cleanup as a
+  // physical socket disconnect so the projector immediately removes the team indicator
+  // without waiting for the next heartbeat timeout (up to 30 s on poor networks).
+  @SubscribeMessage(CONNECTION_EVENTS.LEAVE)
+  async handleSessionLeave(@ConnectedSocket() client: Socket): Promise<void> {
+    await this.handleDisconnect(client)
+    ;(client.data as SocketData) = {} as SocketData
+  }
+
   @SubscribeMessage(MODERATOR_EVENTS.VOTE_OPEN)
   handleVoteOpen(
     @ConnectedSocket() client: Socket,
@@ -447,6 +487,7 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
     cache.status = SessionStatus.AUDIENCE_VOTE
     cache.audienceVoteTally = {}
+    cache.audienceVotePositionTally = {}
     void this.prisma.session.update({ where: { id: sessionId }, data: { status: 'audience_vote' } })
 
     this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.ROUND_VOTE_OPEN, {
@@ -468,6 +509,13 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
     cache.status = SessionStatus.LOBBY
     void this.prisma.session.update({ where: { id: sessionId }, data: { status: 'lobby' } })
+
+    // Flush any pending throttle timer so the final tally is included in the close event
+    const pendingTimer = voteThrottleTimers.get(sessionId)
+    if (pendingTimer) {
+      clearTimeout(pendingTimer)
+      voteThrottleTimers.delete(sessionId)
+    }
 
     const totalVotes = Object.values(cache.audienceVoteTally).reduce((s, v) => s + v, 0)
     this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.ROUND_VOTE_CLOSE, {
@@ -1099,6 +1147,7 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     cache.currentQuestionIndex = 0
     cache.submittedTeams = new Set()
     cache.audienceVoteTally = {}
+    cache.audienceVotePositionTally = {}
 
     void this.prisma.session.update({ where: { id: sessionId }, data: { status: 'lobby' } })
 
@@ -1245,9 +1294,12 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     const validQuestionStatus =
       cache.status === SessionStatus.QUESTION_OPEN || isLocked
     if (!isBonusAnswering && !isClueAnswering && !validQuestionStatus) return
-    // Accept answers up to 2 s after deadline to cover auto-submit arriving after server locks
+    // Accept answers with a grace window to account for network round-trip time:
+    // - QUESTION_OPEN: 500 ms for internet latency (team submits "in time" but packet arrives late)
+    // - QUESTION_LOCKED: 2 s for auto-submit code running after the timer elapsed event
+    const NETWORK_GRACE_MS = 500
     const LATE_GRACE_MS = 2000
-    const deadline = cache.timerDeadline + (isLocked ? LATE_GRACE_MS : 0)
+    const deadline = cache.timerDeadline + (isLocked ? LATE_GRACE_MS : NETWORK_GRACE_MS)
     if (!isBonusAnswering && !isClueAnswering && serverTs > deadline) return
 
     // Clue Reveal: only the buzzing team can submit
@@ -1275,12 +1327,32 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
         )
           return
         tb.pendingAnswer = answer
+        const bonusTd = cache.teamScores.get(teamId)
+        this.server
+          .to(`session:${sessionId}:moderator`)
+          .emit(SERVER_EVENTS.TILEBLITZ_PENDING_ANSWER, {
+            teamId,
+            teamName: bonusTd?.teamName ?? teamId,
+            teamColor: bonusTd?.teamColor ?? '#888',
+            answer,
+            isBonus: true,
+          })
         return
       }
 
       const activeTeamId = tb.turnOrderTeamIds[tb.currentTurnIndex]
       if (teamId !== activeTeamId) return // not your turn
       tb.pendingAnswer = answer
+      const activeTd = cache.teamScores.get(teamId)
+      this.server
+        .to(`session:${sessionId}:moderator`)
+        .emit(SERVER_EVENTS.TILEBLITZ_PENDING_ANSWER, {
+          teamId,
+          teamName: activeTd?.teamName ?? teamId,
+          teamColor: activeTd?.teamColor ?? '#888',
+          answer,
+          isBonus: false,
+        })
       return // do not score yet; answer is provisional until lock
     }
 
@@ -1413,6 +1485,8 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
     const question = cache.currentRoundQuestions[questionIndex]
 
+    // Sync clocks immediately before revealing the question — critical for timer accuracy
+    this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.CLOCK_SYNC, { serverTime: Date.now() })
     // Broadcast tile selection + question to all
     this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.QUESTION_OPEN, {
       questionId,
@@ -1957,11 +2031,13 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     const isQueueEmpty = queue.length === 0
 
     // 🧠 AUTO END TURN IF TEAM FINISHED
+    // endUCTeamTurn already emits UC_STATE internally, so return early to avoid a second emit
     if (isQueueEmpty) {
       await this.endUCTeamTurn(sessionId, cache, 'all_correct')
+      return
     }
 
-    // 📡 FULL STATE SYNC (IMPORTANT — single source of truth)
+    // 📡 FULL STATE SYNC — only reached when more questions remain
     this.server
       .to(`session:${sessionId}`)
       .emit(SERVER_EVENTS.UC_STATE, this.buildUCState(sessionId, cache))
@@ -2209,17 +2285,33 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       })
       .catch(() => undefined)
 
-    // Tally — count each #1 pick for the live race-bar
+    // Tally — count each #1 pick for the live race-bar, plus per-position breakdown
     const firstPick = predictedRanking[0]
     if (firstPick) {
       cache.audienceVoteTally[firstPick] = (cache.audienceVoteTally[firstPick] ?? 0) + 1
     }
 
-    const totalVotes = Object.values(cache.audienceVoteTally).reduce((s, v) => s + v, 0)
-    this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.ROUND_VOTE_UPDATE, {
-      tally: cache.audienceVoteTally,
-      totalVotes,
+    // Track full position breakdown: for each team, how many ranked them at each position
+    predictedRanking.forEach((teamId, idx) => {
+      if (!cache.audienceVotePositionTally[teamId]) cache.audienceVotePositionTally[teamId] = {}
+      const pos = idx + 1
+      cache.audienceVotePositionTally[teamId][pos] = (cache.audienceVotePositionTally[teamId][pos] ?? 0) + 1
     })
+
+    // Throttled broadcast: coalesce rapid submissions into at most one update per 400 ms.
+    // The actual tally is already updated in-memory above; the broadcast just sends the snapshot.
+    const existingTimer = voteThrottleTimers.get(sessionId)
+    if (existingTimer) clearTimeout(existingTimer)
+    const timer = setTimeout(() => {
+      voteThrottleTimers.delete(sessionId)
+      const totalVotes = Object.values(cache.audienceVoteTally).reduce((s, v) => s + v, 0)
+      this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.ROUND_VOTE_UPDATE, {
+        tally: cache.audienceVoteTally,
+        positionTally: cache.audienceVotePositionTally,
+        totalVotes,
+      })
+    }, 400)
+    voteThrottleTimers.set(sessionId, timer)
   }
 
   // ─── Audience: per-question prediction ───────────────────────────────────────
@@ -2338,6 +2430,7 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       })
       .catch(() => undefined)
 
+    this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.CLOCK_SYNC, { serverTime: Date.now() })
     this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.QUESTION_OPEN, {
       questionId: question.id,
       question,
@@ -3060,7 +3153,26 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       team: { id: string; name: string; color: string; members?: Array<{ id: string; name: string }> }
     }>
   }): Promise<void> {
-    if (activeSessions.has(session.id)) return
+    if (activeSessions.has(session.id)) {
+      // Cache already built — sync in any teams added after the initial build
+      // (e.g. teams added via admin UI after the session was first cached)
+      const cache = activeSessions.get(session.id)!
+      for (const st of session.sessionTeams) {
+        if (!cache.teamScores.has(st.teamId)) {
+          cache.teamScores.set(st.teamId, {
+            sessionTeamId: st.id,
+            teamId: st.teamId,
+            teamName: st.team.name,
+            teamColor: st.team.color,
+            score: st.score,
+            roundScores: JSON.parse(st.roundScores) as Record<string, number>,
+            correctAnswerTimeMs: 0,
+            members: st.team.members ?? [],
+          })
+        }
+      }
+      return
+    }
 
     const rounds = await this.prisma.round.findMany({
       where: { quizId: session.quizId, deletedAt: null },
@@ -3131,6 +3243,7 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       connectedTeamIds: alreadyConnected,
       completedRoundIds: new Set(),
       audienceVoteTally: {},
+      audienceVotePositionTally: {},
       audienceEmojiCount: {},
       audienceLevel:
         ((session as any).quiz?.defaultAudienceLevel as AudienceEngagementLevel) ||
@@ -3331,6 +3444,7 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       completedRoundIds: Array.from(cache.completedRoundIds),
       isLastRound,
       currentRoundId: cache.currentRoundId,
+      serverTime: Date.now(), // clients use this to sync their local clocks
     }
 
     if (round && cache.currentRoundId) {

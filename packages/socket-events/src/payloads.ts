@@ -64,6 +64,7 @@ export interface RoundVoteOpenPayload {
 
 export interface RoundVoteUpdatePayload {
   tally: Record<string, number>
+  positionTally?: Record<string, Record<string, number>> // teamId → {position → count}
   totalVotes: number
 }
 
@@ -247,6 +248,14 @@ export interface TileBlitzBonusResultPayload {
   pointsEarned: number
   correctAnswer: string
   scores: TeamScore[]
+}
+
+export interface TileBlitzPendingAnswerPayload {
+  teamId: string
+  teamName: string
+  teamColor: string
+  answer: string
+  isBonus: boolean
 }
 
 export interface QuestionOpenTileBlitzPayload extends QuestionOpenPayload {

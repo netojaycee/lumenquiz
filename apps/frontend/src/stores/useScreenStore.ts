@@ -58,6 +58,7 @@ interface ScreenStore {
   timerElapsed: boolean
   voteData: RoundVoteOpenPayload | null
   voteTally: Record<string, number>
+  positionTally: Record<string, Record<string, number>>
   totalVotes: number
   voteClosed: boolean
   revealData: QuestionRevealPayload | null
@@ -145,6 +146,7 @@ export const useScreenStore = create<ScreenStore>((set) => ({
   timerElapsed: false,
   voteData: null,
   voteTally: {},
+  positionTally: {},
   totalVotes: 0,
   voteClosed: false,
   revealData: null,
@@ -235,12 +237,14 @@ export const useScreenStore = create<ScreenStore>((set) => ({
     sessionStatus: SessionStatus.AUDIENCE_VOTE,
     voteData: data,
     voteTally: {},
+    positionTally: {},
     totalVotes: 0,
     voteClosed: false,
   }),
 
   updateVote: (data) => set({
     voteTally: data.tally,
+    positionTally: data.positionTally ?? {},
     totalVotes: data.totalVotes,
   }),
 

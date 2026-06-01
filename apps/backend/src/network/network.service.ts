@@ -27,14 +27,18 @@ export class NetworkService {
         if (n.includes('virtualbox') || n.includes('vbox') || n.includes('host-only')) score -= 60
         if (n.includes('hyper-v') || n.includes('vethernet')) score -= 60
         if (n.includes('docker') || n.includes('bridge')) score -= 50
-        if (n.includes('vpn') || n.includes('tunnel') || n.includes('tun') || n.includes('tap')) score -= 40
+        if (n.includes('vpn') || n.includes('tunnel') || n.includes('tun') || n.includes('tap'))
+          score -= 40
         if (n.includes('bluetooth')) score -= 30
         if (n.includes('virtual') || n.includes('pseudo')) score -= 40
         if (n.includes('loopback')) score -= 100
 
         // Slight preference for the most common home/office subnet
         if (iface.address.startsWith('192.168.')) score += 10
+        if (iface.address.startsWith('169.')) score += 10
         else if (iface.address.startsWith('10.')) score += 5
+
+        console.log(iface.address)
 
         candidates.push({ ip: iface.address, score, name })
       }
@@ -47,9 +51,7 @@ export class NetworkService {
 
   private isPrivateIPv4(ip: string): boolean {
     return (
-      ip.startsWith('192.168.') ||
-      ip.startsWith('10.') ||
-      /^172\.(1[6-9]|2\d|3[01])\./.test(ip)
+      ip.startsWith('192.168.') || ip.startsWith('169.') || ip.startsWith('10.') || /^172\.(1[6-9]|2\d|3[01])\./.test(ip)
     )
   }
 

@@ -18,6 +18,8 @@ import { useSocketStore } from '@/stores/useSocketStore'
 import { useScreenStore } from '@/stores/useScreenStore'
 import { useFullscreen } from '@/hooks/useFullscreen'
 import { CONNECTION_EVENTS } from '@apoquiz/socket-events'
+import { serverNow } from '@/lib/clock'
+import { ReconnectOverlay } from '@/components/shared/ReconnectOverlay'
 import { SessionStatus, QuestionType } from '@apoquiz/shared-types'
 
 // ─── Floating emoji overlay ───────────────────────────────────────────────────
@@ -33,7 +35,7 @@ interface FloatingEmoji {
 export function ScreenClient(): React.ReactElement {
   const sessionId = useSessionId()
 
-  const { connect, emit } = useSocketStore()
+  const { connect, emit, midSessionDisconnect } = useSocketStore()
   const {
     sessionStatus,
     sessionCode,
@@ -50,7 +52,7 @@ export function ScreenClient(): React.ReactElement {
     allAnswered,
     timerElapsed,
     voteData,
-    voteTally,
+    positionTally,
     totalVotes,
     revealData,
     roundSummary,
@@ -109,7 +111,7 @@ export function ScreenClient(): React.ReactElement {
   useEffect(() => {
     if (sessionStatus !== SessionStatus.UC_ACTIVE || !ucState?.timerDeadline) return
     const tick = () =>
-      setUCTimeLeft(Math.max(0, Math.ceil((ucState.timerDeadline - Date.now()) / 1000)))
+      setUCTimeLeft(Math.max(0, Math.ceil((ucState.timerDeadline - serverNow()) / 1000)))
     tick()
     const id = setInterval(tick, 500)
     return () => clearInterval(id)
@@ -124,9 +126,9 @@ export function ScreenClient(): React.ReactElement {
     )
       return
     const tick = () => {
-      setClueTimeLeft(Math.max(0, Math.ceil((clueState.timerDeadline - Date.now()) / 1000)))
+      setClueTimeLeft(Math.max(0, Math.ceil((clueState.timerDeadline - serverNow()) / 1000)))
       setAnsweringTimeLeft(
-        Math.max(0, Math.ceil((clueState.answeringTimerDeadline - Date.now()) / 1000)),
+        Math.max(0, Math.ceil((clueState.answeringTimerDeadline - serverNow()) / 1000)),
       )
     }
     tick()
@@ -242,6 +244,7 @@ export function ScreenClient(): React.ReactElement {
 
   return (
     <main className="bg-background relative flex min-h-screen flex-col overflow-hidden select-none">
+      <ReconnectOverlay show={midSessionDisconnect} variant="banner" />
       {/* Moderator-triggered QR overlay — shown on top of any game state */}
       <AnimatePresence>
         {qrOverlay && (
@@ -540,38 +543,182 @@ export function ScreenClient(): React.ReactElement {
         {status === SessionStatus.AUDIENCE_VOTE && voteData && (
           <motion.div
             key="vote"
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="flex flex-1 flex-col items-center justify-center p-16"
+            className="relative flex min-h-screen flex-col overflow-hidden bg-[#08080E]"
           >
-            <p className="text-timer-warning mb-3 text-lg tracking-widest uppercase">
-              Audience Predicts
-            </p>
-            <h2 className="mb-12 text-5xl font-bold text-white">Who will win this round?</h2>
-            <div className="w-full max-w-2xl space-y-4">
-              {voteData.teams.map((t) => {
-                const votes = voteTally[t.id] ?? 0
-                const pct = totalVotes > 0 ? (votes / totalVotes) * 100 : 0
+            {/* Background radial */}
+            <div
+              className="pointer-events-none absolute inset-0"
+              style={{ background: 'radial-gradient(ellipse 70% 45% at 50% 30%, rgba(245,158,11,0.07) 0%, transparent 65%)' }}
+            />
+
+            {/* Header */}
+            <div className="relative z-10 flex flex-col items-center pt-14 pb-6">
+              <motion.p
+                initial={{ opacity: 0, y: -12 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.1 }}
+                className="text-[#F59E0B] text-sm font-bold uppercase tracking-[0.3em] mb-2"
+              >
+                🔮 Audience Ranking Prediction
+              </motion.p>
+              <motion.h2
+                initial={{ opacity: 0, y: -8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.18 }}
+                className="text-6xl font-black text-white tracking-tight"
+              >
+                Who wins this round?
+              </motion.h2>
+              <motion.p
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ delay: 0.3 }}
+                className="text-white/30 mt-3 text-xl"
+              >
+                Audience ranks all teams — who do they believe will finish first?
+              </motion.p>
+            </div>
+
+            {/* Position legend */}
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ delay: 0.4 }}
+              className="relative z-10 flex justify-center gap-6 mb-8"
+            >
+              {[
+                { label: '🥇 1st pick', color: '#F59E0B' },
+                { label: '🥈 2nd pick', color: '#94A3B8' },
+                { label: '🥉 3rd pick', color: '#92400E' },
+              ].map((item) => (
+                <div key={item.label} className="flex items-center gap-2">
+                  <div className="h-3 w-3 rounded-full" style={{ backgroundColor: item.color }} />
+                  <span className="text-white/50 text-sm font-medium">{item.label}</span>
+                </div>
+              ))}
+            </motion.div>
+
+            {/* Team ranking bars */}
+            <div className="relative z-10 flex-1 flex flex-col justify-center px-20 gap-5">
+              {voteData.teams.map((t, teamIdx) => {
+                const teamPositions = positionTally[t.id] ?? {}
+                // How many ranked this team at each position
+                const pos1 = teamPositions['1'] ?? 0
+                const pos2 = teamPositions['2'] ?? 0
+                const pos3 = teamPositions['3'] ?? 0
+                const posRest = Object.entries(teamPositions)
+                  .filter(([k]) => Number(k) > 3)
+                  .reduce((s, [, v]) => s + v, 0)
+                const totalForTeam = pos1 + pos2 + pos3 + posRest
+
+                // Each segment as % of total voters
+                const pct1 = totalVotes > 0 ? (pos1 / totalVotes) * 100 : 0
+                const pct2 = totalVotes > 0 ? (pos2 / totalVotes) * 100 : 0
+                const pct3 = totalVotes > 0 ? (pos3 / totalVotes) * 100 : 0
+                const pctRest = totalVotes > 0 ? (posRest / totalVotes) * 100 : 0
+                const totalPct = pct1 + pct2 + pct3 + pctRest
+
                 return (
-                  <div key={t.id} className="flex items-center gap-4">
-                    <div className="w-40 truncate font-semibold text-white">{t.name}</div>
-                    <div className="bg-surface h-10 flex-1 overflow-hidden rounded-full">
-                      <motion.div
-                        className="flex h-full items-center rounded-full px-4"
-                        style={{ backgroundColor: t.color }}
-                        animate={{ width: `${Math.max(pct, 2)}%` }}
-                        transition={{ type: 'spring', stiffness: 80 }}
-                      >
-                        <span className="text-sm font-bold text-white">{votes}</span>
-                      </motion.div>
+                  <motion.div
+                    key={t.id}
+                    initial={{ opacity: 0, x: -40 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: 0.35 + teamIdx * 0.08, type: 'spring', stiffness: 70 }}
+                    className="flex items-center gap-6"
+                  >
+                    {/* Team identity */}
+                    <div className="flex items-center gap-3 w-44 flex-shrink-0">
+                      <div className="h-5 w-5 rounded-full flex-shrink-0" style={{ backgroundColor: t.color }} />
+                      <span className="font-black text-white text-xl truncate">{t.name}</span>
                     </div>
-                    <span className="text-text-secondary w-12 text-right">{pct.toFixed(0)}%</span>
-                  </div>
+
+                    {/* Stacked position bar */}
+                    <div className="flex-1 relative">
+                      <div className="h-12 rounded-2xl overflow-hidden bg-white/[0.04] border border-white/[0.06] flex">
+                        {/* 1st pick — gold */}
+                        <motion.div
+                          animate={{ width: `${pct1}%` }}
+                          transition={{ type: 'spring', stiffness: 60, damping: 18 }}
+                          className="h-full flex items-center justify-end overflow-hidden"
+                          style={{ backgroundColor: '#F59E0B', minWidth: pct1 > 0 ? 4 : 0 }}
+                        />
+                        {/* 2nd pick — silver */}
+                        <motion.div
+                          animate={{ width: `${pct2}%` }}
+                          transition={{ type: 'spring', stiffness: 60, damping: 18 }}
+                          className="h-full overflow-hidden"
+                          style={{ backgroundColor: '#94A3B8', minWidth: pct2 > 0 ? 4 : 0 }}
+                        />
+                        {/* 3rd pick — bronze */}
+                        <motion.div
+                          animate={{ width: `${pct3}%` }}
+                          transition={{ type: 'spring', stiffness: 60, damping: 18 }}
+                          className="h-full overflow-hidden"
+                          style={{ backgroundColor: '#92400E', minWidth: pct3 > 0 ? 4 : 0 }}
+                        />
+                        {/* 4th+ pick — dimmer team color */}
+                        <motion.div
+                          animate={{ width: `${pctRest}%` }}
+                          transition={{ type: 'spring', stiffness: 60, damping: 18 }}
+                          className="h-full overflow-hidden"
+                          style={{ backgroundColor: `${t.color}55`, minWidth: pctRest > 0 ? 4 : 0 }}
+                        />
+                      </div>
+
+                      {/* Segment labels shown inside bar when large enough */}
+                      <div className="absolute inset-0 flex items-center pointer-events-none">
+                        <div className="flex h-full w-full">
+                          {pct1 >= 8 && (
+                            <div
+                              className="flex items-center justify-center text-xs font-black text-black/70"
+                              style={{ width: `${pct1}%` }}
+                            >
+                              {Math.round(pct1)}%
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Stats column */}
+                    <div className="w-28 flex-shrink-0 text-right">
+                      <p className="text-xl font-black tabular-nums" style={{ color: t.color }}>
+                        {totalForTeam}
+                      </p>
+                      <p className="text-white/30 text-xs font-medium">
+                        {totalVotes > 0 ? `${Math.round(totalPct)}% voted` : '—'}
+                      </p>
+                      {pos1 > 0 && (
+                        <p className="text-[#F59E0B] text-xs font-bold">
+                          {pos1} × 🥇
+                        </p>
+                      )}
+                    </div>
+                  </motion.div>
                 )
               })}
             </div>
-            <p className="text-text-muted mt-8 text-sm">{totalVotes} votes cast</p>
+
+            {/* Footer vote count */}
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ delay: 0.6 }}
+              className="relative z-10 flex justify-center items-center gap-4 pb-12 pt-6"
+            >
+              <div className="flex items-center gap-2 rounded-2xl border border-[#F59E0B]/20 bg-[#F59E0B]/08 px-6 py-3">
+                <Users className="h-4 w-4 text-[#F59E0B]" />
+                <span className="text-[#F59E0B] font-black text-2xl tabular-nums">{totalVotes}</span>
+                <span className="text-white/40 text-sm">votes cast</span>
+              </div>
+              <div className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-6 py-3">
+                <span className="text-white/40 text-sm">audience on phone</span>
+                <span className="text-white/60 font-bold text-xl tabular-nums">{audienceCount}</span>
+              </div>
+            </motion.div>
           </motion.div>
         )}
 
@@ -640,21 +787,28 @@ export function ScreenClient(): React.ReactElement {
                       animate={{ scale: 1, opacity: 1 }}
                       transition={{ delay: i * 0.03 }}
                       className={cn(
-                        'flex aspect-square flex-col items-center justify-center rounded-2xl border-2 text-2xl font-bold',
+                        'flex aspect-square flex-col items-center justify-center rounded-2xl border-2 text-2xl font-bold transition-all',
                         tile.used
-                          ? 'bg-surface/30 border-border opacity-40'
-                          : 'bg-surface border-blitz-accent/40',
+                          ? 'border-white/15 bg-white/[0.03]'
+                          : 'bg-[#3B82F6]/20 border-[#3B82F6] shadow-lg',
                       )}
                       style={
                         tile.used && teamColor
-                          ? { borderColor: teamColor, backgroundColor: `${teamColor}15` }
-                          : undefined
+                          ? { borderColor: `${teamColor}70`, backgroundColor: `${teamColor}18` }
+                          : !tile.used
+                            ? { boxShadow: '0 0 16px rgba(59,130,246,0.25)' }
+                            : undefined
                       }
                     >
                       {tile.used ? (
-                        <span className="text-3xl">✓</span>
+                        <span
+                          className="text-2xl font-black"
+                          style={{ color: teamColor ? `${teamColor}80` : 'rgba(255,255,255,0.2)' }}
+                        >
+                          ✓
+                        </span>
                       ) : (
-                        <span className="text-white">{i + 1}</span>
+                        <span className="text-white font-black">{i + 1}</span>
                       )}
                     </motion.div>
                   )

@@ -138,6 +138,20 @@ export class QuizService {
         },
         include: { members: true },
       })
+
+      // If a pre-launch session already exists for this quiz, register the new team in it
+      // so it appears in sessionTeams from the moment it's created, not only at launchSession.
+      const pendingSession = await tx.session.findFirst({
+        where: { quizId, status: { notIn: ['completed', 'session_end'] } },
+        select: { id: true },
+        orderBy: { createdAt: 'desc' },
+      })
+      if (pendingSession) {
+        await tx.sessionTeam.create({
+          data: { sessionId: pendingSession.id, teamId: team.id },
+        })
+      }
+
       return team
     })
   }

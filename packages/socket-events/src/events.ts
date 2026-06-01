@@ -22,6 +22,7 @@ export const SERVER_EVENTS = {
   TILEBLITZ_BONUS_CLAIMED: 'tileblitz:bonus:claimed',
   TILEBLITZ_BONUS_RESULT: 'tileblitz:bonus:result',
   TILEBLITZ_BONUS_TIMER_ELAPSED: 'tileblitz:bonus:timer:elapsed',
+  TILEBLITZ_PENDING_ANSWER: 'tileblitz:pending:answer',
   CUMULATIVE_SCORES: 'session:cumulative',
   // Ultimate Challenge specific
   UC_STATE: 'uc:state',
@@ -36,6 +37,7 @@ export const SERVER_EVENTS = {
   AUDIENCE_INTERACTION_START: 'audience:interaction:start',
   AUDIENCE_INTERACTION_UPDATE: 'audience:interaction:update',
   AUDIENCE_INTERACTION_CLOSE: 'audience:interaction:close',
+  CLOCK_SYNC: 'clock:sync',
   // Screen overlay
   SCREEN_QR_SHOW: 'screen:qr:show',
   SCREEN_QR_HIDE: 'screen:qr:hide',
@@ -99,6 +101,7 @@ export const AUDIENCE_EVENTS = {
 // Bidirectional connection events
 export const CONNECTION_EVENTS = {
   REJOIN: 'session:rejoin',
+  LEAVE: 'session:leave',
   DISCONNECT: 'disconnect',
   CONNECT: 'connect',
   CONNECT_ERROR: 'connect_error',

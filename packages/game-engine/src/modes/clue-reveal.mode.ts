@@ -16,7 +16,7 @@ export class ClueRevealMode implements GameModeStrategy {
   readonly description =
     'The answer emerges slowly. Patience vs greed. Buzz in early for maximum points — but wrong means locked out.'
   readonly rules = [
-    'Clues appear one at a time (3–5 per question)',
+    'Clues appear one at a time (3-5 per question)',
     'Buzz in when you think you know the answer',
     'First clue correct = maximum points',
     'Each additional clue revealed = fewer points available',

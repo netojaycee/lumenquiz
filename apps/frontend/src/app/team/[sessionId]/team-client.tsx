@@ -24,6 +24,8 @@ import { useSocketStore } from '@/stores/useSocketStore'
 import { useTeamStore } from '@/stores/useTeamStore'
 import { useFullscreen } from '@/hooks/useFullscreen'
 import { TEAM_EVENTS, CONNECTION_EVENTS, JOIN_EVENTS } from '@apoquiz/socket-events'
+import { serverNow } from '@/lib/clock'
+import { ReconnectOverlay } from '@/components/shared/ReconnectOverlay'
 import { SessionStatus, QuestionType } from '@apoquiz/shared-types'
 import type { CumulativeScoresPayload } from '@apoquiz/socket-events'
 
@@ -35,7 +37,7 @@ export function TeamClient(): React.ReactElement {
   const sessionId = useSessionId()
   const router = useRouter()
 
-  const { connect, emit } = useSocketStore()
+  const { connect, emit, midSessionDisconnect } = useSocketStore()
   const {
     teamId,
     teamName,
@@ -79,7 +81,7 @@ export function TeamClient(): React.ReactElement {
   useEffect(() => {
     if (sessionStatus !== SessionStatus.UC_ACTIVE || !ucState?.timerDeadline) return
     const tick = () =>
-      setUCTimeLeft(Math.max(0, Math.ceil((ucState.timerDeadline - Date.now()) / 1000)))
+      setUCTimeLeft(Math.max(0, Math.ceil((ucState.timerDeadline - serverNow()) / 1000)))
     tick()
     const id = setInterval(tick, 500)
     return () => clearInterval(id)
@@ -93,9 +95,9 @@ export function TeamClient(): React.ReactElement {
     )
       return
     const tick = () => {
-      setClueTimeLeft(Math.max(0, Math.ceil((clueState.timerDeadline - Date.now()) / 1000)))
+      setClueTimeLeft(Math.max(0, Math.ceil((clueState.timerDeadline - serverNow()) / 1000)))
       setAnsweringTimeLeft(
-        Math.max(0, Math.ceil((clueState.answeringTimerDeadline - Date.now()) / 1000)),
+        Math.max(0, Math.ceil((clueState.answeringTimerDeadline - serverNow()) / 1000)),
       )
     }
     tick()
@@ -156,6 +158,7 @@ export function TeamClient(): React.ReactElement {
         answer: ans,
         clientTimestamp: Date.now(),
       })
+      sessionStorage.removeItem(`draft:${currentQuestion.id}`)
       setOpenAnswer('')
       soundManager.stopTick()
     }
@@ -250,7 +253,9 @@ export function TeamClient(): React.ReactElement {
     socket.on(JOIN_EVENTS.TEAM_JOINED, onJoined)
 
     const onError = (data: { code?: string }) => {
-      if (data?.code === 'SESSION_NOT_FOUND' || data?.code === 'SESSION_NOT_STARTED') {
+      // These codes all mean "quiz isn't live yet" — show the friendly waiting screen
+      const prelaunchCodes = ['SESSION_NOT_FOUND', 'SESSION_NOT_STARTED', 'NO_ACTIVE_SESSION', 'TEAM_NOT_IN_SESSION']
+      if (data?.code && prelaunchCodes.includes(data.code)) {
         setPhase('not_started')
       } else {
         setPhase('failed')
@@ -271,12 +276,38 @@ export function TeamClient(): React.ReactElement {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId])
 
+  // Draft answer — restore from sessionStorage if we're mid-question on the same question
   useEffect(() => {
-    if (sessionStatus === SessionStatus.QUESTION_OPEN) {
-      setOpenAnswer('')
+    if (sessionStatus === SessionStatus.QUESTION_OPEN && currentQuestion) {
+      const draft = sessionStorage.getItem(`draft:${currentQuestion.id}`)
+      setOpenAnswer(draft ?? '')
       setTimeout(() => inputRef.current?.focus(), 100)
+    } else {
+      setOpenAnswer('')
     }
-  }, [sessionStatus])
+  }, [sessionStatus, currentQuestion?.id])
+
+  // Persist open-answer draft to sessionStorage as the user types
+  useEffect(() => {
+    if (!currentQuestion || sessionStatus !== SessionStatus.QUESTION_OPEN) return
+    if (openAnswer) {
+      sessionStorage.setItem(`draft:${currentQuestion.id}`, openAnswer)
+    } else {
+      sessionStorage.removeItem(`draft:${currentQuestion.id}`)
+    }
+  }, [openAnswer, currentQuestion?.id, sessionStatus])
+
+  // Wake lock — keep screen on during active play so phones don't sleep mid-question
+  useEffect(() => {
+    if (typeof navigator === 'undefined' || !('wakeLock' in navigator)) return
+    let lock: WakeLockSentinel | null = null
+    if (phase === 'connected') {
+      ;(navigator as any).wakeLock.request('screen').then((l: WakeLockSentinel) => {
+        lock = l
+      }).catch(() => {})
+    }
+    return () => { lock?.release().catch(() => {}) }
+  }, [phase])
 
   useEffect(() => {
     if (
@@ -339,6 +370,7 @@ export function TeamClient(): React.ReactElement {
       answer: ans,
       clientTimestamp: Date.now(),
     })
+    sessionStorage.removeItem(`draft:${currentQuestion.id}`)
     setOpenAnswer('')
     soundManager.stopTick()
   }
@@ -401,6 +433,7 @@ export function TeamClient(): React.ReactElement {
 
   return (
     <main className="min-h-screen bg-[#08080E] flex flex-col">
+      <ReconnectOverlay show={midSessionDisconnect} />
       {/* Header */}
       <header
         className="relative flex-shrink-0 border-b border-white/[0.07] overflow-hidden"
@@ -430,7 +463,11 @@ export function TeamClient(): React.ReactElement {
               <p className="text-white/25 text-[10px] font-bold uppercase tracking-widest mt-0.5">pts</p>
             </div>
             <button
-              onClick={() => { storage.clearTeam(); router.push('/join') }}
+              onClick={() => {
+                storage.clearTeam()
+                emit(CONNECTION_EVENTS.LEAVE, {})
+                router.push('/join')
+              }}
               className="text-white/20 p-1.5 rounded-lg hover:text-white/50 transition-colors"
               title="Leave session"
             >
@@ -486,13 +523,13 @@ export function TeamClient(): React.ReactElement {
                       animate={{ opacity: 1, scale: 1 }}
                       transition={{ delay: i * 0.04 }}
                       className={cn(
-                        'flex aspect-square items-center justify-center rounded-xl border text-base font-bold select-none',
+                        'flex aspect-square items-center justify-center rounded-xl border-2 text-base font-bold select-none transition-all',
                         tile.used
-                          ? 'border-white/5 bg-white/[0.02] text-white/20 opacity-50'
-                          : 'border-[#3B82F6]/30 bg-white/[0.04] text-white/60',
+                          ? 'border-white/10 bg-white/[0.03] text-white/20'
+                          : 'border-[#3B82F6] bg-[#3B82F6]/20 text-white',
                       )}
                     >
-                      {tile.used ? '✓' : i + 1}
+                      {tile.used ? <span className="text-white/20 text-xs">✓</span> : i + 1}
                     </motion.div>
                   ))}
                 </div>
@@ -1159,36 +1196,108 @@ export function TeamClient(): React.ReactElement {
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
-                className="flex flex-1 flex-col items-center justify-center gap-5 text-center"
+                className="flex flex-1 flex-col gap-4"
               >
-                {ar ? (
-                  <>
-                    <p className="text-white/35 text-xs uppercase tracking-widest">Result</p>
-                    <div
-                      className="h-12 w-12 rounded-full flex items-center justify-center text-xl font-black text-white"
-                      style={{ backgroundColor: ar.teamColor }}
-                    >
-                      {ar.teamName.slice(0, 1).toUpperCase()}
-                    </div>
-                    <p className="text-lg font-black text-white">{ar.teamName}</p>
-                    <p className={cn('text-3xl font-black', ar.isCorrect ? 'text-[#22C55E]' : 'text-red-400')}>
-                      {ar.isCorrect ? '✅ Correct!' : '❌ Wrong'}
+                {/* Clear "not your question" banner */}
+                <motion.div
+                  initial={{ opacity: 0, y: -10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3 flex items-center gap-3"
+                >
+                  <span className="text-2xl">👀</span>
+                  <div>
+                    <p className="text-white/60 text-xs font-black uppercase tracking-widest">
+                      Not your turn
                     </p>
-                    {showAnswer && (
-                      <div className="rounded-2xl border border-[#22C55E]/30 bg-[#22C55E]/10 px-6 py-3">
-                        <p className="text-[10px] font-black tracking-[0.25em] uppercase text-white/35 mb-1">Correct Answer</p>
-                        <p className="text-xl font-black text-[#22C55E]">{revealData.correctAnswer}</p>
+                    <p className="text-white/35 text-xs mt-0.5">
+                      Watch the projector — no points earned this question
+                    </p>
+                  </div>
+                </motion.div>
+
+                {ar ? (
+                  <motion.div
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.15 }}
+                    className="flex flex-col items-center gap-4 py-4"
+                  >
+                    {/* Active team label */}
+                    <div className="flex items-center gap-2">
+                      <div
+                        className="h-8 w-8 rounded-full flex items-center justify-center text-sm font-black text-white flex-shrink-0"
+                        style={{ backgroundColor: ar.teamColor }}
+                      >
+                        {ar.teamName.slice(0, 1).toUpperCase()}
                       </div>
+                      <div>
+                        <p className="text-white/40 text-[10px] font-bold uppercase tracking-widest">Their result</p>
+                        <p className="text-base font-black text-white leading-tight">{ar.teamName}</p>
+                      </div>
+                    </div>
+
+                    {/* Their outcome */}
+                    <motion.p
+                      initial={{ scale: 0.8, opacity: 0 }}
+                      animate={{ scale: 1, opacity: 1 }}
+                      transition={{ delay: 0.25, type: 'spring', stiffness: 180 }}
+                      className={cn('text-4xl font-black', ar.isCorrect ? 'text-[#22C55E]' : 'text-red-400')}
+                    >
+                      {ar.isCorrect ? '✅ Correct!' : '❌ Wrong'}
+                    </motion.p>
+
+                    {ar.isCorrect && (
+                      <motion.p
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        transition={{ delay: 0.4 }}
+                        className="text-[#22C55E] text-xl font-black"
+                      >
+                        +{ar.pointsEarned} pts (theirs)
+                      </motion.p>
                     )}
-                  </>
+
+                    {showAnswer && (
+                      <motion.div
+                        initial={{ opacity: 0, y: 8 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: 0.45 }}
+                        className="rounded-2xl border border-[#22C55E]/30 bg-[#22C55E]/10 px-6 py-3 text-center"
+                      >
+                        <p className="text-[10px] font-black tracking-[0.25em] uppercase text-white/35 mb-1">Correct Answer</p>
+                        <p className="text-lg font-black text-[#22C55E]">{revealData.correctAnswer}</p>
+                      </motion.div>
+                    )}
+                  </motion.div>
                 ) : (
-                  <p className="text-white/30 text-sm">Watch the projector for the result</p>
+                  <div className="flex flex-1 items-center justify-center">
+                    <p className="text-white/30 text-sm">Watch the projector for the result</p>
+                  </div>
                 )}
-                <div className="w-full rounded-2xl border border-white/8 bg-white/[0.04] px-6 py-4 text-center">
-                  <p className="text-white/25 text-[10px] font-bold uppercase tracking-widest mb-1">Your Score</p>
-                  <p className="text-3xl font-black tabular-nums text-white">{score}</p>
-                  {rank != null && <p className="text-white/35 text-xs mt-0.5">Rank #{rank}</p>}
-                </div>
+
+                {/* Your own score — clearly separated and labelled as unchanged */}
+                <motion.div
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.6 }}
+                  className="mt-auto w-full rounded-2xl border border-white/8 bg-white/[0.04] px-6 py-4"
+                >
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-white/25 text-[10px] font-bold uppercase tracking-widest">
+                        Your score — unchanged
+                      </p>
+                      <p className="text-3xl font-black tabular-nums text-white mt-0.5">{score}</p>
+                      {rank != null && <p className="text-white/35 text-xs mt-0.5">Rank #{rank}</p>}
+                    </div>
+                    <div
+                      className="h-10 w-10 rounded-full flex items-center justify-center text-base font-black text-white flex-shrink-0"
+                      style={{ backgroundColor: teamColorHex }}
+                    >
+                      {teamName?.[0]?.toUpperCase()}
+                    </div>
+                  </div>
+                </motion.div>
               </motion.div>
             )
           })()}

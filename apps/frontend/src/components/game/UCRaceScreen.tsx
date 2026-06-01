@@ -255,14 +255,14 @@ export function UCRaceScreen({ teams, currentQuestion, timeLeft, lastAction, act
                 </AnimatePresence>
               )}
             </div>
-            <AnimatePresence mode="wait">
+            <AnimatePresence>
               {currentQuestion ? (
                 <motion.p
                   key={currentQuestion.id}
-                  initial={{ opacity: 0, y: 8 }}
+                  initial={{ opacity: 0, y: 6 }}
                   animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -8 }}
-                  transition={{ type: 'spring', stiffness: 90 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.15 }}
                   className="text-2xl font-bold text-white leading-snug"
                 >
                   {currentQuestion.text}

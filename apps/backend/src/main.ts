@@ -59,7 +59,7 @@ async function bootstrap(): Promise<void> {
 
   // Accept localhost, any RFC 1918 LAN address, and the configured PUBLIC_URL domain.
   const privateIpPattern =
-    /^https?:\/\/(localhost|127\.0\.0\.1|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})(:\d+)?$/
+    /^https?:\/\/(localhost|127\.0\.0\.1|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|169\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})(:\d+)?$/
 
   // Derive allowed public origin from PUBLIC_URL (e.g. https://quiz.yourdomain.com)
   const allowedPublicOrigin = publicUrl

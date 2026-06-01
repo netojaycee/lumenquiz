@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useSessionId } from '@/hooks/useSessionId'
-import { motion, AnimatePresence } from 'framer-motion'
+import { motion, AnimatePresence, LayoutGroup } from 'framer-motion'
 import { WifiOff, CheckCircle2, LogOut, Maximize, Sparkles, Clock } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
@@ -13,6 +13,7 @@ import { useAudienceStore } from '@/stores/useAudienceStore'
 import { SessionStatus } from '@apoquiz/shared-types'
 import { useFullscreen } from '@/hooks/useFullscreen'
 import { AudienceInteractionOverlay } from '@/components/audience/AudienceInteractionOverlay'
+import { ReconnectOverlay } from '@/components/shared/ReconnectOverlay'
 import { SERVER_EVENTS, AUDIENCE_EVENTS, CONNECTION_EVENTS, JOIN_EVENTS } from '@apoquiz/socket-events'
 
 const EMOJIS = ['🔥', '⭐', '😮', '👏', '💯', '🚀', '❤️', '😂']
@@ -31,7 +32,7 @@ export function AudienceClient(): React.ReactElement {
   const sessionId = useSessionId()
   const router = useRouter()
 
-  const { connect, emit } = useSocketStore()
+  const { connect, emit, midSessionDisconnect } = useSocketStore()
   const {
     audienceId,
     fullName,
@@ -67,6 +68,18 @@ export function AudienceClient(): React.ReactElement {
       enterFullscreen()
     }
   }, [sessionStatus, isSupported, isFullscreen, enterFullscreen])
+
+  // Wake lock — audience phones must stay awake during voting / predictions
+  useEffect(() => {
+    if (typeof navigator === 'undefined' || !('wakeLock' in navigator)) return
+    let lock: WakeLockSentinel | null = null
+    if (phase === 'connected') {
+      ;(navigator as any).wakeLock.request('screen').then((l: WakeLockSentinel) => {
+        lock = l
+      }).catch(() => {})
+    }
+    return () => { lock?.release().catch(() => {}) }
+  }, [phase])
 
   // ─── Connection ───────────────────────────────────────────────────────────
 
@@ -223,6 +236,7 @@ export function AudienceClient(): React.ReactElement {
 
   return (
     <main className="min-h-screen bg-[#08080E] flex flex-col">
+      <ReconnectOverlay show={midSessionDisconnect} />
       {/* Header */}
       <header className="relative flex-shrink-0 border-b border-white/[0.07] bg-[#0F0F13]">
         <div className="flex items-center justify-between px-5 py-3">
@@ -380,41 +394,74 @@ export function AudienceClient(): React.ReactElement {
                   </div>
                 </div>
               ) : (
-                <>
-                  <div className="space-y-2.5 mb-6">
-                    {voteData.teams.map((t) => {
-                      const position = ranking.indexOf(t.id)
-                      return (
-                        <motion.button
-                          key={t.id}
-                          whileTap={{ scale: 0.97 }}
-                          onClick={() => toggleRanking(t.id)}
-                          className={cn(
-                            'flex w-full items-center gap-4 rounded-2xl border-2 p-4 text-left transition-all',
-                            position >= 0 ? 'border-current' : 'border-white/10 bg-white/[0.025]',
-                          )}
-                          style={position >= 0 ? {
-                            borderColor: t.color,
-                            backgroundColor: `${t.color}12`,
-                          } : {}}
-                        >
-                          <div className="h-4 w-4 rounded-full flex-shrink-0" style={{ backgroundColor: t.color }} />
-                          <span className="flex-1 font-black text-white">{t.name}</span>
-                          {position >= 0 && (
-                            <motion.span
-                              initial={{ scale: 0 }}
-                              animate={{ scale: 1 }}
-                              className="font-black text-sm"
-                              style={{ color: t.color }}
+                <LayoutGroup>
+                  {/* ── Ranked slots (in order, top to bottom) ── */}
+                  {ranking.length > 0 && (
+                    <div className="mb-4">
+                      <p className="text-white/25 text-[10px] font-black tracking-[0.2em] uppercase mb-2">
+                        Your Prediction
+                      </p>
+                      <div className="space-y-2">
+                        {ranking.map((tid, i) => {
+                          const t = voteData.teams.find((x) => x.id === tid)
+                          if (!t) return null
+                          const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : null
+                          return (
+                            <motion.button
+                              key={tid}
+                              layout
+                              layoutId={`team-${tid}`}
+                              initial={{ opacity: 0, scale: 0.9 }}
+                              animate={{ opacity: 1, scale: 1 }}
+                              whileTap={{ scale: 0.97 }}
+                              onClick={() => toggleRanking(tid)}
+                              className="flex w-full items-center gap-4 rounded-2xl border-2 p-4 text-left"
+                              style={{ borderColor: t.color, backgroundColor: `${t.color}15` }}
                             >
-                              #{position + 1}
-                            </motion.span>
-                          )}
-                        </motion.button>
-                      )
-                    })}
-                  </div>
+                              <span className="w-8 text-center text-lg flex-shrink-0">
+                                {medal ?? <span className="text-white/40 text-sm font-black">#{i + 1}</span>}
+                              </span>
+                              <div className="h-4 w-4 rounded-full flex-shrink-0" style={{ backgroundColor: t.color }} />
+                              <span className="flex-1 font-black text-white">{t.name}</span>
+                              <span className="text-white/30 text-xs">tap to remove</span>
+                            </motion.button>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ── Unranked teams ── */}
+                  {voteData.teams.some((t) => !ranking.includes(t.id)) && (
+                    <div className="mb-5">
+                      <p className="text-white/25 text-[10px] font-black tracking-[0.2em] uppercase mb-2">
+                        {ranking.length === 0 ? 'Tap to rank (1st → last)' : `Next: #${ranking.length + 1}`}
+                      </p>
+                      <div className="space-y-2">
+                        {voteData.teams
+                          .filter((t) => !ranking.includes(t.id))
+                          .map((t) => (
+                            <motion.button
+                              key={t.id}
+                              layout
+                              layoutId={`team-${t.id}`}
+                              whileTap={{ scale: 0.97 }}
+                              onClick={() => toggleRanking(t.id)}
+                              className="flex w-full items-center gap-4 rounded-2xl border-2 border-white/10 bg-white/[0.025] p-4 text-left"
+                            >
+                              <span className="w-8 text-center text-white/20 text-sm font-black flex-shrink-0">
+                                #{ranking.length + 1}
+                              </span>
+                              <div className="h-4 w-4 rounded-full flex-shrink-0" style={{ backgroundColor: t.color }} />
+                              <span className="flex-1 font-black text-white">{t.name}</span>
+                            </motion.button>
+                          ))}
+                      </div>
+                    </div>
+                  )}
+
                   <motion.button
+                    layout
                     whileTap={{ scale: 0.97 }}
                     className="w-full h-13 rounded-2xl font-black text-base py-3.5 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
                     style={{
@@ -426,9 +473,9 @@ export function AudienceClient(): React.ReactElement {
                   >
                     {ranking.length < voteData.teams.length
                       ? `Rank all teams (${ranking.length}/${voteData.teams.length})`
-                      : 'Submit Ranking'}
+                      : 'Lock in my prediction!'}
                   </motion.button>
-                </>
+                </LayoutGroup>
               )}
             </motion.div>
           )}
