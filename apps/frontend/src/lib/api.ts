@@ -4,8 +4,9 @@
 //   "http://…"  → direct override, e.g. for Electron or LAN device testing
 export function getBaseUrl(): string {
   const envUrl = process.env.NEXT_PUBLIC_API_URL
+  const PORT = process.env.NEXT_PUBLIC_API_PORT ?? '3002'
   if (envUrl) return envUrl                          // explicit absolute URL only
-  if (typeof window === 'undefined') return 'http://localhost:3002'  // SSR fallback
+  if (typeof window === 'undefined') return `http://localhost:${PORT}`  // SSR fallback
   return ''                                          // browser: relative → proxy in dev, same-origin in prod
 }
 
@@ -13,9 +14,10 @@ export function getBaseUrl(): string {
 // Always connects directly to the backend; for web hosting NEXT_PUBLIC_API_URL="" signals same-origin.
 export function getSocketUrl(): string {
   const envUrl = process.env.NEXT_PUBLIC_API_URL
+  const PORT = process.env.NEXT_PUBLIC_API_PORT ?? '3002'
   if (envUrl !== undefined) return envUrl
-  if (typeof window === 'undefined') return 'http://localhost:3002'
-  return `http://${window.location.hostname}:3002`
+  if (typeof window === 'undefined') return `http://localhost:${PORT}`
+  return `http://${window.location.hostname}:${PORT}`
 }
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
