@@ -27,57 +27,6 @@ async function bootstrap(): Promise<void> {
   // even if PUBLIC_URL points to an https:// domain.
   const secureCookies = isProduction
 
-  // When TLS is terminated by an upstream proxy that does NOT forward
-  // X-Forwarded-Proto, Express sees the request as plain HTTP and
-  // express-session silently refuses to issue the Secure cookie. PUBLIC_URL
-  // tells us the real public scheme, so normalise the header for /api requests.
-  const publicIsHttps = publicUrl.startsWith('https')
-  if (publicIsHttps) {
-    app.getHttpAdapter().getInstance().set('trust proxy', 1)
-    app.use('/api', (req: any, _res: any, next: any) => {
-      if (!req.headers['x-forwarded-proto']) req.headers['x-forwarded-proto'] = 'https'
-      next()
-    })
-  }
-
-  // ─── TEMP DEBUG: print resolved env / cookie config at startup ──────────────
-  console.info('[auth-debug] startup config', {
-    NODE_ENV: process.env['NODE_ENV'],
-    PUBLIC_URL: process.env['PUBLIC_URL'],
-    isProduction,
-    secureCookies,
-    sameSite: secureCookies ? 'none' : 'lax',
-    SESSION_SECRET_set: Boolean(process.env['SESSION_SECRET']),
-  })
-
-  // ─── TEMP DEBUG: log proxy/cookie signals for auth + quiz requests ──────────
-  app.use('/api', (req: any, res: any, next: any) => {
-    if (req.url.startsWith('/auth') || req.url.startsWith('/quiz')) {
-      const setCookieAtSend = (): void => {
-        console.info('[auth-debug] response', {
-          method: req.method,
-          url: req.url,
-          status: res.statusCode,
-          'set-cookie': res.getHeader('set-cookie') ?? null,
-        })
-      }
-      res.on('finish', setCookieAtSend)
-      console.info('[auth-debug] request', {
-        method: req.method,
-        url: req.url,
-        protocol: req.protocol, // express's view (depends on trust proxy)
-        secure: req.secure, // must be true for a Secure cookie to be issued
-        'x-forwarded-proto': req.headers['x-forwarded-proto'] ?? null,
-        'x-forwarded-for': req.headers['x-forwarded-for'] ?? null,
-        host: req.headers['host'],
-        origin: req.headers['origin'] ?? null,
-        hasCookieHeader: Boolean(req.headers['cookie']),
-        cookie: req.headers['cookie'] ?? null,
-      })
-    }
-    next()
-  })
-
   app.use("/api",
     session({
       store: new FileStore({
