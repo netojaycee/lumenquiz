@@ -27,6 +27,19 @@ async function bootstrap(): Promise<void> {
   // even if PUBLIC_URL points to an https:// domain.
   const secureCookies = isProduction
 
+  // When TLS is terminated by an upstream proxy that does NOT forward
+  // X-Forwarded-Proto, Express sees the request as plain HTTP and
+  // express-session silently refuses to issue the Secure cookie. PUBLIC_URL
+  // tells us the real public scheme, so normalise the header for /api requests.
+  const publicIsHttps = publicUrl.startsWith('https')
+  if (publicIsHttps) {
+    app.getHttpAdapter().getInstance().set('trust proxy', 1)
+    app.use('/api', (req: any, _res: any, next: any) => {
+      if (!req.headers['x-forwarded-proto']) req.headers['x-forwarded-proto'] = 'https'
+      next()
+    })
+  }
+
   // ─── TEMP DEBUG: print resolved env / cookie config at startup ──────────────
   console.info('[auth-debug] startup config', {
     NODE_ENV: process.env['NODE_ENV'],
