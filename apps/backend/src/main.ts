@@ -27,6 +27,23 @@ async function bootstrap(): Promise<void> {
   // even if PUBLIC_URL points to an https:// domain.
   const secureCookies = isProduction
 
+  // When running in production (behind nginx/HTTPS), trust the proxy's
+  // X-Forwarded-* headers so express-session sets the Secure cookie correctly.
+  if (isProduction) {
+    app.getHttpAdapter().getInstance().set('trust proxy', 1)
+  }
+
+  // The proxy fronting this subdomain terminates TLS but does not forward
+  // X-Forwarded-Proto, so Express sees the request as plain HTTP and
+  // express-session refuses to issue the Secure cookie. PUBLIC_URL tells us the
+  // real public scheme, so normalise the header for /api requests.
+  if (isProduction && publicUrl.startsWith('https')) {
+    app.use('/api', (req: any, _res: any, next: any) => {
+      if (!req.headers['x-forwarded-proto']) req.headers['x-forwarded-proto'] = 'https'
+      next()
+    })
+  }
+
   app.use("/api",
     session({
       store: new FileStore({
@@ -75,12 +92,6 @@ async function bootstrap(): Promise<void> {
     },
     credentials: true,
   })
-
-  // When running in production (behind nginx/HTTPS), trust the proxy's
-  // X-Forwarded-* headers so express-session sets the cookie correctly.
-  if (isProduction) {
-    app.getHttpAdapter().getInstance().set('trust proxy', 1)
-  }
 
   // Serve uploaded member avatars statically at /uploads/...
   const uploadsPath = path.join(process.cwd(), 'uploads')
