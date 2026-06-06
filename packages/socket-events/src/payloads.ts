@@ -383,6 +383,7 @@ export interface UCEndTurnPayload {
 
 export interface ClueStatePayload {
   questionId: string
+  correctAnswer: string | null
   clues: string[]
   currentClueIndex: number // 0-based — how many clues shown so far
   currentClueText: string // the clue currently visible

@@ -2,7 +2,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { useSessionId } from '@/hooks/useSessionId'
 import { motion, AnimatePresence } from 'framer-motion'
-import { CheckCircle2, XCircle, Users, Maximize, Zap, Wifi } from 'lucide-react'
+import { CheckCircle2, XCircle, Users, Maximize, Zap, Wifi, Loader2 } from 'lucide-react'
+import { Dialog } from '@/components/ui/dialog'
 import { api } from '@/lib/api'
 import { TimerBar, TimerCountdown } from '@/components/game/TimerBar'
 import { RoundIntroScreen } from '@/components/game/RoundIntroScreen'
@@ -77,6 +78,22 @@ export function ScreenClient(): React.ReactElement {
   const [showGoodbye, setShowGoodbye] = useState(false)
   const [networkInfo, setNetworkInfo] = useState<{ ip: string; port: number; joinURL: string } | null>(null)
   const [qrDataURL, setQrDataURL] = useState<string | null>(null)
+  const [audienceListOpen, setAudienceListOpen] = useState(false)
+  const [audienceListData, setAudienceListData] = useState<{ id: string; fullName: string; totalPoints: number }[]>([])
+  const [audienceListLoading, setAudienceListLoading] = useState(false)
+
+  async function openAudienceList() {
+    setAudienceListOpen(true)
+    setAudienceListLoading(true)
+    try {
+      const data = await api.get<{ id: string; fullName: string; totalPoints: number }[]>(`/sessions/${sessionId}/audience`)
+      setAudienceListData(data)
+    } catch {
+      setAudienceListData([])
+    } finally {
+      setAudienceListLoading(false)
+    }
+  }
 
   // Auto-fullscreen on round start
   useEffect(() => {
@@ -450,11 +467,15 @@ export function ScreenClient(): React.ReactElement {
                       <span className="text-[#22C55E] font-bold text-lg">{connectedTeamIds.length}</span>
                       <span className="text-white/40 text-sm">teams ready</span>
                     </div>
-                    <div className="flex items-center gap-2 rounded-2xl border border-[#F59E0B]/20 bg-[#F59E0B]/08 px-5 py-3">
+                    <button
+                      onClick={openAudienceList}
+                      className="flex items-center gap-2 rounded-2xl border border-[#F59E0B]/20 bg-[#F59E0B]/08 px-5 py-3 transition-colors hover:bg-[#F59E0B]/15 cursor-pointer"
+                      title="View connected audience"
+                    >
                       <Users className="h-4 w-4 text-[#F59E0B]" />
                       <span className="text-[#F59E0B] font-bold text-lg">{audienceCount}</span>
                       <span className="text-white/40 text-sm">audience</span>
-                    </div>
+                    </button>
                     {isSupported && !isFullscreen && (
                       <button
                         onClick={enterFullscreen}
@@ -714,10 +735,14 @@ export function ScreenClient(): React.ReactElement {
                 <span className="text-[#F59E0B] font-black text-2xl tabular-nums">{totalVotes}</span>
                 <span className="text-white/40 text-sm">votes cast</span>
               </div>
-              <div className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-6 py-3">
+              <button
+                onClick={openAudienceList}
+                className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-6 py-3 transition-colors hover:bg-white/[0.08] cursor-pointer"
+                title="View connected audience"
+              >
                 <span className="text-white/40 text-sm">audience on phone</span>
                 <span className="text-white/60 font-bold text-xl tabular-nums">{audienceCount}</span>
-              </div>
+              </button>
             </motion.div>
           </motion.div>
         )}
@@ -857,7 +882,7 @@ export function ScreenClient(): React.ReactElement {
               key={`question-${question.id}`}
               initial={{ opacity: 0, y: 30 }}
               animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0 }}
+              exit={{ opacity: 0, transition: { duration: 0 } }}
               className="flex flex-1 flex-col p-12"
             >
               {/* Header: active team (Tile Blitz) or progress (Blitz) + timer */}
@@ -1513,6 +1538,36 @@ export function ScreenClient(): React.ReactElement {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Audience list popup */}
+      <Dialog
+        open={audienceListOpen}
+        onClose={() => setAudienceListOpen(false)}
+        title={`Connected Audience (${audienceCount})`}
+      >
+        {audienceListLoading ? (
+          <div className="flex items-center justify-center py-8">
+            <Loader2 className="h-5 w-5 animate-spin text-white/40" />
+          </div>
+        ) : audienceListData.length === 0 ? (
+          <p className="text-white/40 text-sm text-center py-6">No audience members connected</p>
+        ) : (
+          <div className="space-y-1">
+            {audienceListData.map((m, i) => (
+              <div
+                key={m.id}
+                className="flex items-center justify-between rounded-lg px-3 py-2 bg-white/[0.03] hover:bg-white/[0.06] transition-colors"
+              >
+                <div className="flex items-center gap-2.5">
+                  <span className="text-white/20 text-xs w-5 tabular-nums">{i + 1}</span>
+                  <span className="text-white text-sm font-medium">{m.fullName}</span>
+                </div>
+                <span className="text-[#F59E0B] text-xs font-bold tabular-nums">{m.totalPoints} pts</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </Dialog>
     </main>
   )
 }

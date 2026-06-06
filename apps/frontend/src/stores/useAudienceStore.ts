@@ -90,11 +90,15 @@ export const useAudienceStore = create<AudienceStore>((set) => ({
   setIdentity: ({ audienceId, sessionId, fullName, fingerprint }) =>
     set({ audienceId, sessionId, fullName, fingerprint }),
 
-  applySessionState: (data) => set({
+  applySessionState: (data) => set((s) => ({
     sessionStatus: data.status,
     audienceCount: data.audienceCount,
     activeInteraction: (data as any).activeInteraction ?? null,
-  }),
+    // Restore personal score atomically with state — server always includes this on join/rejoin
+    totalPoints: (data as any).personalTotalPoints != null
+      ? (data as any).personalTotalPoints
+      : s.totalPoints,
+  })),
 
   setRoundStart: () => set({ sessionStatus: SessionStatus.ROUND_INTRO }),
 

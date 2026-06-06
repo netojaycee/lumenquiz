@@ -429,18 +429,20 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       `audience:${audienceId}`,
     ])
 
-    // Tell the client their audienceId so they can persist it to localStorage
-    client.emit(JOIN_EVENTS.AUDIENCE_JOINED, { audienceId, sessionId })
-    client.emit(SERVER_EVENTS.SESSION_STATE, this.buildStateSnapshot(sessionId))
-
-    // Restore personal points for reconnecting members so their score survives a page reload
+    // Fetch personal points before emitting state so the audience member's score
+    // is restored atomically in a single event — avoids the race where a separate
+    // AUDIENCE_POINTS_UPDATE fires before the dynamic store import resolves.
     const memberPoints = await this.prisma.audienceMember.findUnique({
       where: { id: audienceId },
       select: { totalPoints: true },
     })
-    if (memberPoints && memberPoints.totalPoints > 0) {
-      client.emit(SERVER_EVENTS.AUDIENCE_POINTS_UPDATE, { pointsEarned: 0, totalPoints: memberPoints.totalPoints })
-    }
+
+    // Tell the client their audienceId so they can persist it to localStorage
+    client.emit(JOIN_EVENTS.AUDIENCE_JOINED, { audienceId, sessionId })
+    client.emit(SERVER_EVENTS.SESSION_STATE, {
+      ...this.buildStateSnapshot(sessionId),
+      personalTotalPoints: memberPoints?.totalPoints ?? 0,
+    })
 
     const cache = activeSessions.get(sessionId)
     if (cache && !alreadyCounted) {
@@ -3119,6 +3121,7 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
     return {
       questionId: question?.id ?? null,
+      correctAnswer: question?.correctAnswer ?? null,
       clues: cr.clues,
       currentClueIndex: cr.currentClueIndex,
       currentClueText: cr.clues[cr.currentClueIndex] ?? '',
@@ -3729,71 +3732,71 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       case AudienceActivity.QUESTION_PREDICTION: {
         const pools: Record<string, string[]> = {
           blitz: [
-            'Which team answers this one correctly?',
-            'Who knows the answer?',
-            'Which team is on a roll right now?',
-            'Fastest fingers — who gets it?',
+            'Which team will answer this one correctly?',
+            'Who will get it right?',
+            'Which team will be on the money here?',
+            'Fastest fingers — who will get it?',
             'Pick your winner for this question!',
           ],
           hot_seat: activeTeam
             ? [
-                `Does ${activeTeam.teamName} know the answer?`,
+                `Will ${activeTeam.teamName} know the answer?`,
                 `Can ${activeTeam.teamName} handle the pressure?`,
                 `${activeTeam.teamName} is in the hot seat — will they deliver?`,
               ]
-            : ['Will they get it right?', 'Can they handle the pressure?', 'Under the spotlight — do they know it?'],
+            : ['Will they get it right?', 'Can they handle the pressure?', 'Under the spotlight — will they know it?'],
           tile_blitz: activeTeam
             ? [
                 `Will ${activeTeam.teamName} get this tile?`,
-                `${activeTeam.teamName} is up — do they know it?`,
+                `${activeTeam.teamName} is up — will they know it?`,
                 `Can ${activeTeam.teamName} claim this tile?`,
               ]
             : ['Will they claim this tile?'],
           lightning: [
-            'Speed round — who nails it?',
+            'Speed round — who will nail it?',
             'Lightning fast — pick a team!',
-            'Who keeps their streak alive?',
-            'No hesitation — who answers?',
+            'Who will keep their streak alive?',
+            'No hesitation — who will answer?',
           ],
           wager: [
-            'Which team wagered correctly?',
-            "Who bet on the right answer?",
-            "Bold move — which team's bet pays off?",
+            'Which team will wager correctly?',
+            "Who will bet on the right answer?",
+            "Bold move — which team's bet will pay off?",
           ],
           elimination: [
-            'Who survives this question?',
-            'Which team stays in the game?',
-            'One wrong answer costs everything — who gets it right?',
-            'Life on the line — which team knows it?',
+            'Who will survive this question?',
+            'Which team will stay in the game?',
+            'One wrong answer costs everything — who will get it right?',
+            'Life on the line — which team will know it?',
           ],
         }
         const pool = pools[gameMode] ?? [
-          'Who gets this right?',
+          'Who will get this right?',
           'Pick the winning team!',
-          'Which team knows this one?',
-          'Your prediction — who answers correctly?',
+          'Which team will know this one?',
+          'Your prediction — who will answer correctly?',
         ]
         return pool[qi % pool.length]!
       }
 
       case AudienceActivity.STEAL_PREDICTION: {
         const pool = [
-          'Which team steals the points?',
-          'Who swoops in for the steal?',
-          'Name your thief — who takes it?',
-          'Eyes on the prize — who steals it?',
-          'The points are up for grabs — who wants them?',
+          'Which team will steal the points?',
+          'Who will swoop in for the steal?',
+          'Name your thief — who will take it?',
+          'Eyes on the prize — who will steal it?',
+          'The points are up for grabs — who will want them?',
         ]
         return pool[qi % pool.length]!
       }
 
       case AudienceActivity.DUEL_PREDICTION: {
         const pool = [
-          'Who wins this duel?',
+          'Who will win this duel?',
           'Face to face — pick your champion!',
-          'One will fall — who wins?',
-          'Head to head — who takes the points?',
-          'The clash is on — who comes out on top?',
+          'One will fall — who will win?',
+          'Head to head — who will take the points?',
+          'The clash is on — who will come out on top?',
         ]
         return pool[qi % pool.length]!
       }

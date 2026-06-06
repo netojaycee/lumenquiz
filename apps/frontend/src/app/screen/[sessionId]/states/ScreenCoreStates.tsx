@@ -84,37 +84,117 @@ export function ScreenLobbyPanel({ isFullscreen, isSupported, enterFullscreen }:
 
 // ─── AUDIENCE VOTE ────────────────────────────────────────────────────────────
 
+const POSITION_MEDALS = ['🥇', '🥈', '🥉']
+const POSITION_LABELS = ['1st Place', '2nd Place', '3rd Place']
+const POSITION_COLORS = ['#F59E0B', '#9CA3AF', '#CD7F32']
+
 export function ScreenAudienceVotePanel() {
-  const { voteData, voteTally, totalVotes } = useScreenStore()
+  const { voteData, positionTally, totalVotes } = useScreenStore()
   if (!voteData) return null
 
+  const teams = voteData.teams
+  const positions = Array.from({ length: teams.length }, (_, i) => i + 1)
+
+  // For each position, find the team with the most votes at that position
+  function getPositionLeader(pos: number): { team: (typeof teams)[0]; votes: number; pct: number } | null {
+    let best: (typeof teams)[0] | null = null
+    let bestVotes = 0
+    for (const t of teams) {
+      const v = positionTally[t.id]?.[pos] ?? 0
+      if (v > bestVotes) { bestVotes = v; best = t }
+    }
+    if (!best) return null
+    return { team: best, votes: bestVotes, pct: totalVotes > 0 ? (bestVotes / totalVotes) * 100 : 0 }
+  }
+
   return (
-    <div className="flex-1 flex flex-col items-center justify-center p-16">
-      <p className="text-timer-warning text-lg uppercase tracking-widest mb-3">Audience Predicts</p>
-      <h2 className="text-white text-5xl font-bold mb-12">Who will win this round?</h2>
-      <div className="w-full max-w-2xl space-y-4">
-        {voteData.teams.map((t) => {
-          const votes = voteTally[t.id] ?? 0
-          const pct = totalVotes > 0 ? (votes / totalVotes) * 100 : 0
+    <div className="flex-1 flex flex-col items-center justify-center p-12 gap-10">
+      {/* Header */}
+      <div className="text-center">
+        <p className="text-[#F59E0B] text-sm uppercase tracking-[0.25em] font-bold mb-2">
+          Audience Ranking Prediction
+        </p>
+        <h2 className="text-white text-5xl font-black">
+          {voteData.roundName ? `Round ${voteData.roundName}` : 'Who finishes where?'}
+        </h2>
+        <p className="text-white/40 mt-2 text-lg">Audience is ranking all teams from 1st to last</p>
+      </div>
+
+      {/* Position columns */}
+      <div
+        className="w-full max-w-4xl grid gap-4"
+        style={{ gridTemplateColumns: `repeat(${Math.min(positions.length, 3)}, 1fr)` }}
+      >
+        {positions.slice(0, 3).map((pos) => {
+          const leader = getPositionLeader(pos)
+          const posColor = POSITION_COLORS[pos - 1] ?? '#6B7280'
           return (
-            <div key={t.id} className="flex items-center gap-4">
-              <div className="w-40 text-white font-semibold truncate">{t.name}</div>
-              <div className="flex-1 h-10 bg-surface rounded-full overflow-hidden">
-                <motion.div
-                  className="h-full rounded-full flex items-center px-4"
-                  style={{ backgroundColor: t.color }}
-                  animate={{ width: `${Math.max(pct, 2)}%` }}
-                  transition={{ type: 'spring', stiffness: 80 }}
-                >
-                  <span className="text-white font-bold text-sm">{votes}</span>
-                </motion.div>
+            <div
+              key={pos}
+              className="rounded-3xl border bg-white/[0.03] p-6 flex flex-col items-center gap-4"
+              style={{ borderColor: `${posColor}40` }}
+            >
+              {/* Position badge */}
+              <div className="flex items-center gap-2">
+                <span className="text-3xl">{POSITION_MEDALS[pos - 1] ?? `#${pos}`}</span>
+                <span className="text-lg font-black" style={{ color: posColor }}>
+                  {POSITION_LABELS[pos - 1] ?? `Position ${pos}`}
+                </span>
               </div>
-              <span className="text-text-secondary w-12 text-right">{pct.toFixed(0)}%</span>
+
+              {/* Per-team bars for this position */}
+              <div className="w-full space-y-2">
+                {teams.map((t) => {
+                  const votes = positionTally[t.id]?.[pos] ?? 0
+                  const pct = totalVotes > 0 ? (votes / totalVotes) * 100 : 0
+                  const isLeading = leader?.team.id === t.id && votes > 0
+                  return (
+                    <div key={t.id} className="flex items-center gap-2">
+                      <div
+                        className="h-3 w-3 flex-shrink-0 rounded-full"
+                        style={{ backgroundColor: t.color }}
+                      />
+                      <span className="w-24 truncate text-xs font-semibold text-white/70">{t.name}</span>
+                      <div className="flex-1 h-2.5 rounded-full overflow-hidden bg-white/[0.06]">
+                        <motion.div
+                          className="h-full rounded-full"
+                          style={{ backgroundColor: isLeading ? t.color : `${t.color}60` }}
+                          animate={{ width: `${Math.max(pct, pct > 0 ? 2 : 0)}%` }}
+                          transition={{ type: 'spring', stiffness: 70, damping: 18 }}
+                        />
+                      </div>
+                      <span className="w-8 text-right text-xs tabular-nums" style={{ color: isLeading ? posColor : 'rgba(255,255,255,0.3)' }}>
+                        {pct > 0 ? `${pct.toFixed(0)}%` : '—'}
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+
+              {/* Leading team highlight */}
+              {leader && (
+                <motion.div
+                  key={leader.team.id}
+                  layout
+                  className="w-full rounded-2xl px-4 py-2.5 flex items-center gap-3"
+                  style={{ backgroundColor: `${leader.team.color}20`, border: `1px solid ${leader.team.color}50` }}
+                >
+                  <div className="h-3 w-3 rounded-full animate-pulse" style={{ backgroundColor: leader.team.color }} />
+                  <span className="font-black text-white text-sm flex-1 truncate">{leader.team.name}</span>
+                  <span className="text-xs font-bold tabular-nums" style={{ color: leader.team.color }}>
+                    {leader.votes} vote{leader.votes !== 1 ? 's' : ''}
+                  </span>
+                </motion.div>
+              )}
             </div>
           )
         })}
       </div>
-      <p className="text-text-muted mt-8 text-sm">{totalVotes} votes cast</p>
+
+      {/* Footer */}
+      <p className="text-white/30 text-sm tabular-nums">
+        {totalVotes} {totalVotes === 1 ? 'prediction' : 'predictions'} submitted
+      </p>
     </div>
   )
 }

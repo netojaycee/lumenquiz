@@ -131,6 +131,16 @@ export class SessionService {
     return session
   }
 
+  // ─── getConnectedAudience — returns names of currently connected audience members ──
+
+  async getConnectedAudience(sessionId: string) {
+    return this.prisma.audienceMember.findMany({
+      where: { sessionId, connected: true },
+      select: { id: true, fullName: true, totalPoints: true },
+      orderBy: { joinedAt: 'asc' },
+    })
+  }
+
   // ─── findByCode — resolves sessionCode | raw id ───────────────────────────────
 
   async findByCode(code: string): Promise<{

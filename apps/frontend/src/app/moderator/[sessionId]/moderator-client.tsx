@@ -26,8 +26,10 @@ import {
   XCircle,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Dialog } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
 import { storage } from '@/lib/storage'
+import { api } from '@/lib/api'
 import { useSocketStore } from '@/stores/useSocketStore'
 import { ReconnectOverlay } from '@/components/shared/ReconnectOverlay'
 import { useScreenStore } from '@/stores/useScreenStore'
@@ -140,6 +142,24 @@ export function ModeratorClient(): React.ReactElement {
   const [qrOnScreen, setQrOnScreen] = useState(false)
   const [rulesOnScreen, setRulesOnScreen] = useState(false)
   const [pendingAnswer, setPendingAnswer] = useState<{ answer: string; teamName: string; teamColor: string; isBonus: boolean } | null>(null)
+
+  // Audience list popup
+  const [audienceListOpen, setAudienceListOpen] = useState(false)
+  const [audienceListData, setAudienceListData] = useState<{ id: string; fullName: string; totalPoints: number }[]>([])
+  const [audienceListLoading, setAudienceListLoading] = useState(false)
+
+  async function openAudienceList() {
+    setAudienceListOpen(true)
+    setAudienceListLoading(true)
+    try {
+      const data = await api.get<{ id: string; fullName: string; totalPoints: number }[]>(`/sessions/${sessionId}/audience`)
+      setAudienceListData(data)
+    } catch {
+      setAudienceListData([])
+    } finally {
+      setAudienceListLoading(false)
+    }
+  }
 
   // Cloud sync state (shown at session end)
   const [showSyncPanel, setShowSyncPanel] = useState(false)
@@ -504,9 +524,15 @@ const toggleTimer = useCallback(() => {
           )}
         </div>
         <div className="text-text-muted flex items-center gap-4 text-sm">
-          <span className="flex items-center gap-1.5">
-            <Users className="h-4 w-4" /> {audienceCount} audience
-          </span>
+          <button
+            onClick={openAudienceList}
+            className="flex items-center gap-1.5 rounded-md px-2 py-1 transition-colors hover:text-white hover:bg-white/5"
+            title="View connected audience members"
+          >
+            <Users className="h-4 w-4" />
+            <span className="font-semibold">{audienceCount}</span>
+            <span>audience</span>
+          </button>
           <button
             onClick={toggleQROnScreen}
             title={qrOnScreen ? 'Hide QR from screen' : 'Show QR on screen'}
@@ -1192,12 +1218,12 @@ const toggleTimer = useCallback(() => {
                 </div>
 
                 {/* Correct answer (for moderator reference) */}
-                {currentQuestion && (
+                {clueState.correctAnswer && (
                   <div className="bg-correct/5 border-correct/20 mb-4 rounded-lg border px-3 py-2">
                     <p className="text-text-muted mb-0.5 text-xs tracking-wide uppercase">
                       Correct answer
                     </p>
-                    <p className="text-correct font-semibold">{currentQuestion.correctAnswer}</p>
+                    <p className="text-correct font-semibold">{clueState.correctAnswer}</p>
                   </div>
                 )}
 
@@ -1260,12 +1286,12 @@ const toggleTimer = useCallback(() => {
                     {clueState.pointsAvailable} pts
                   </span>
                 </div>
-                {currentQuestion && (
+                {clueState.correctAnswer && (
                   <div className="bg-correct/5 border-correct/20 rounded-lg border px-3 py-2">
                     <p className="text-text-muted mb-0.5 text-xs tracking-wide uppercase">
                       Correct answer
                     </p>
-                    <p className="text-correct font-semibold">{currentQuestion.correctAnswer}</p>
+                    <p className="text-correct font-semibold">{clueState.correctAnswer}</p>
                   </div>
                 )}
               </motion.div>
@@ -1808,6 +1834,36 @@ const toggleTimer = useCallback(() => {
           </div>
         </aside>
       </div>
+
+      {/* Audience list popup */}
+      <Dialog
+        open={audienceListOpen}
+        onClose={() => setAudienceListOpen(false)}
+        title={`Connected Audience (${audienceCount})`}
+      >
+        {audienceListLoading ? (
+          <div className="flex items-center justify-center py-8">
+            <Loader2 className="h-5 w-5 animate-spin text-white/40" />
+          </div>
+        ) : audienceListData.length === 0 ? (
+          <p className="text-white/40 text-sm text-center py-6">No audience members connected</p>
+        ) : (
+          <div className="space-y-1">
+            {audienceListData.map((m, i) => (
+              <div
+                key={m.id}
+                className="flex items-center justify-between rounded-lg px-3 py-2 bg-white/[0.03] hover:bg-white/[0.06] transition-colors"
+              >
+                <div className="flex items-center gap-2.5">
+                  <span className="text-white/20 text-xs w-5 tabular-nums">{i + 1}</span>
+                  <span className="text-white text-sm font-medium">{m.fullName}</span>
+                </div>
+                <span className="text-[#F59E0B] text-xs font-bold tabular-nums">{m.totalPoints} pts</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </Dialog>
     </main>
   )
 }

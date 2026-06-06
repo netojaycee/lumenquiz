@@ -13,6 +13,11 @@ export class SessionPublicController {
     if (!session) throw new NotFoundException(`Session not found for code: ${code}`)
     return session
   }
+
+  @Get('sessions/:id/audience')
+  getConnectedAudience(@Param('id') id: string) {
+    return this.sessionService.getConnectedAudience(id)
+  }
 }
 
 @UseGuards(AdminGuard)
