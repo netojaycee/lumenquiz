@@ -336,6 +336,7 @@ export function AudienceClient(): React.ReactElement {
               <div className="mb-6">
                 <h2 className="text-xl font-black text-white">Predict the Rankings!</h2>
                 <p className="text-white/35 mt-1 text-sm">Tap teams in order from 1st to last — rank all {voteData.teams.length} teams to submit</p>
+                <p className="text-white/20 mt-1.5 text-xs">Just for fun — no points for this</p>
               </div>
 
               {hasVoted ? (

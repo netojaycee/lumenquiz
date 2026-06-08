@@ -1,4 +1,5 @@
-import { Injectable, NotFoundException } from '@nestjs/common'
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common'
+import { randomBytes } from 'crypto'
 import { PrismaService } from '../prisma/prisma.service'
 
 @Injectable()
@@ -24,6 +25,82 @@ export class SessionService {
       if (!existing) return code
     }
     throw new Error('Could not generate unique session code')
+  }
+
+  private async generateUniqueJoinCode(): Promise<string> {
+    for (let attempt = 0; attempt < 50; attempt++) {
+      const code = this.randomCode(8)
+      const existing = await this.prisma.team.findUnique({ where: { joinCode: code } })
+      if (!existing) return code
+    }
+    throw new Error('Could not generate unique join code')
+  }
+
+  // ─── Quiz launch validation ───────────────────────────────────────────────────
+
+  private async validateQuizCanLaunch(quizId: string): Promise<void> {
+    const quiz = await this.prisma.quiz.findFirst({
+      where: { id: quizId, deletedAt: null },
+      include: {
+        teams: { where: { deletedAt: null }, select: { id: true } },
+        rounds: {
+          where: { deletedAt: null },
+          orderBy: { order: 'asc' },
+          select: {
+            id: true,
+            name: true,
+            order: true,
+            gameMode: true,
+            questionCount: true,
+            questions: { where: { deletedAt: null }, select: { id: true } },
+          },
+        },
+      },
+    })
+    if (!quiz) throw new NotFoundException(`Quiz ${quizId} not found`)
+
+    const teamCount = quiz.teams.length
+    const errors: string[] = []
+
+    if (teamCount === 0) errors.push('No teams added — add at least one team')
+    if (quiz.rounds.length === 0) errors.push('No rounds added — add at least one round')
+
+    for (const round of quiz.rounds) {
+      const actual = round.questions.length
+      const needed = round.questionCount
+      const label = round.name ?? `Round ${round.order}`
+      const mode = round.gameMode
+
+      // Collective modes: all teams answer same questions
+      if (mode === 'blitz' || mode === 'clue_reveal') {
+        if (actual < needed) {
+          errors.push(
+            `"${label}" (${mode.replace('_', ' ')}) needs ${needed} question${needed !== 1 ? 's' : ''} — only ${actual} added`,
+          )
+        }
+      }
+      // Per-team modes: each team gets their own set of questions
+      else if (mode === 'tile_blitz' || mode === 'ultimate_challenge') {
+        if (teamCount > 0) {
+          const required = needed * teamCount
+          if (actual < required) {
+            errors.push(
+              `"${label}" (${mode.replace('_', ' ')}) needs ${required} questions (${teamCount} teams × ${needed}) — only ${actual} added`,
+            )
+          }
+        }
+      }
+      // Fallback for any other mode: require at least questionCount
+      else if (actual < needed) {
+        errors.push(
+          `"${label}" needs ${needed} question${needed !== 1 ? 's' : ''} — only ${actual} added`,
+        )
+      }
+    }
+
+    if (errors.length > 0) {
+      throw new BadRequestException({ message: 'Quiz is not ready to launch', errors })
+    }
   }
 
   // ─── createSession — called at quiz creation time (status: pending) ──────────
@@ -65,6 +142,8 @@ export class SessionService {
   // ─── launchSession — transitions pending/lobby session to lobby ──────────────
 
   async launchSession(quizId: string) {
+    await this.validateQuizCanLaunch(quizId)
+
     let session = await this.prisma.session.findFirst({
       where: { quizId },
       orderBy: { createdAt: 'desc' },
@@ -239,5 +318,38 @@ export class SessionService {
     )
 
     return [header, ...rows].join('\n')
+  }
+
+  // ─── resetTeamSlot — admin override to re-seat a team on a new device ─────────
+  // Clears the device token (so a new device can claim the slot) and issues a fresh
+  // join code (so the old code is invalidated and cannot be replayed by anyone who
+  // had it). Returns the new join code so the host can hand it to the team.
+
+  async resetTeamSlot(sessionId: string, teamId: string): Promise<{ teamId: string; newJoinCode: string }> {
+    const st = await this.prisma.sessionTeam.findFirst({
+      where: { sessionId, teamId },
+    })
+    if (!st) throw new NotFoundException(`Team ${teamId} is not in session ${sessionId}`)
+
+    const newJoinCode = await this.generateUniqueJoinCode()
+
+    await this.prisma.$transaction([
+      this.prisma.sessionTeam.updateMany({
+        where: { sessionId, teamId },
+        data: { deviceToken: null, connected: false, socketId: null },
+      }),
+      this.prisma.team.update({
+        where: { id: teamId },
+        data: { joinCode: newJoinCode },
+      }),
+    ])
+
+    return { teamId, newJoinCode }
+  }
+
+  // ─── generateTokenForTeam — issues a fresh 64-char hex device token ──────────
+
+  static generateDeviceToken(): string {
+    return randomBytes(32).toString('hex')
   }
 }

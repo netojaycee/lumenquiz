@@ -4,7 +4,7 @@ import { useSessionId } from '@/hooks/useSessionId'
 import { motion, AnimatePresence } from 'framer-motion'
 import { CheckCircle2, XCircle, Users, Maximize, Zap, Wifi, Loader2 } from 'lucide-react'
 import { Dialog } from '@/components/ui/dialog'
-import { api } from '@/lib/api'
+import { api, getBaseUrl } from '@/lib/api'
 import { TimerBar, TimerCountdown } from '@/components/game/TimerBar'
 import { RoundIntroScreen } from '@/components/game/RoundIntroScreen'
 import { RoundSummaryScreen } from '@/components/game/RoundSummaryScreen'
@@ -67,6 +67,8 @@ export function ScreenClient(): React.ReactElement {
     activeInteraction,
     qrOverlay,
     rulesOverlay,
+    ucReviewOverlay,
+    ucAudioPlay,
   } = useScreenStore()
 
   const [floatingEmojis, setFloatingEmojis] = useState<FloatingEmoji[]>([])
@@ -132,6 +134,14 @@ export function ScreenClient(): React.ReactElement {
     tick()
     const id = setInterval(tick, 500)
     return () => clearInterval(id)
+  }, [sessionStatus, ucState?.timerDeadline])
+
+  // UC tick sound — start when active, stop when leaving
+  useEffect(() => {
+    if (sessionStatus !== SessionStatus.UC_ACTIVE || !ucState?.timerDeadline) return
+    const remainingMs = Math.max(0, ucState.timerDeadline - serverNow())
+    if (remainingMs > 0) soundManager.startTick(remainingMs)
+    return () => soundManager.stopTick()
   }, [sessionStatus, ucState?.timerDeadline])
 
   // Clue Reveal countdowns
@@ -345,6 +355,157 @@ export function ScreenClient(): React.ReactElement {
         )}
       </AnimatePresence>
 
+      {/* UC Turn Review overlay — shown when moderator emits a completed team's review */}
+      <AnimatePresence>
+        {ucReviewOverlay && (
+          <motion.div
+            key={`uc-review-${ucReviewOverlay.teamId}`}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[55] flex flex-col bg-[#08080E]/92 backdrop-blur-lg"
+          >
+            {/* Header stripe in team color */}
+            <motion.div
+              initial={{ scaleX: 0 }}
+              animate={{ scaleX: 1 }}
+              transition={{ duration: 0.5, ease: 'easeOut' }}
+              className="h-1.5 w-full origin-left"
+              style={{ backgroundColor: ucReviewOverlay.teamColor }}
+            />
+
+            <div className="flex flex-1 flex-col overflow-hidden p-16">
+              {/* Title */}
+              <motion.div
+                initial={{ opacity: 0, y: -20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.15 }}
+                className="mb-10 flex items-center gap-6"
+              >
+                <div
+                  className="h-7 w-7 flex-shrink-0 rounded-full shadow-lg"
+                  style={{ backgroundColor: ucReviewOverlay.teamColor, boxShadow: `0 0 20px ${ucReviewOverlay.teamColor}55` }}
+                />
+                <div>
+                  <p className="text-sm font-bold uppercase tracking-[0.3em]" style={{ color: ucReviewOverlay.teamColor }}>
+                    Ultimate Challenge — Turn Review
+                  </p>
+                  <h2 className="text-5xl font-black text-white leading-tight">
+                    {ucReviewOverlay.teamName}
+                  </h2>
+                </div>
+                {/* Summary badge */}
+                <div className="ml-auto flex items-center gap-6">
+                  <div className="text-center">
+                    <p className="text-5xl font-black tabular-nums" style={{ color: ucReviewOverlay.teamColor }}>
+                      {ucReviewOverlay.totalCorrect}
+                      <span className="text-white/25 text-3xl">/{ucReviewOverlay.questions.length}</span>
+                    </p>
+                    <p className="text-white/40 text-sm font-medium mt-1">correct</p>
+                  </div>
+                  <div className="h-12 w-px bg-white/10" />
+                  <div className="text-center">
+                    <p className="text-5xl font-black text-white tabular-nums">
+                      {ucReviewOverlay.totalPoints}
+                    </p>
+                    <p className="text-white/40 text-sm font-medium mt-1">points</p>
+                  </div>
+                </div>
+              </motion.div>
+
+              {/* Question list */}
+              <div
+                className="grid flex-1 gap-4"
+                style={{
+                  gridTemplateColumns: ucReviewOverlay.questions.length <= 4
+                    ? '1fr'
+                    : ucReviewOverlay.questions.length <= 8
+                      ? 'repeat(2, 1fr)'
+                      : 'repeat(3, 1fr)',
+                  alignContent: 'start',
+                }}
+              >
+                {ucReviewOverlay.questions.map((q, i) => (
+                  <motion.div
+                    key={q.questionId}
+                    initial={{ opacity: 0, x: -24 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: 0.2 + i * 0.06, type: 'spring', stiffness: 80 }}
+                    className={cn(
+                      'flex items-start gap-5 rounded-2xl border-2 px-6 py-5',
+                      q.wasAnswered
+                        ? 'border-[#22C55E]/25 bg-[#22C55E]/[0.07]'
+                        : 'border-white/[0.07] bg-white/[0.025]',
+                    )}
+                  >
+                    {/* Index */}
+                    <span className="text-white/25 font-mono text-lg font-bold flex-shrink-0 mt-0.5 w-7">
+                      Q{i + 1}
+                    </span>
+
+                    {/* Content */}
+                    <div className="flex-1 min-w-0">
+                      <p className={cn('text-lg font-semibold leading-snug', q.wasAnswered ? 'text-white' : 'text-white/50')}>
+                        {q.questionText}
+                      </p>
+                      <p className={cn('mt-1.5 text-sm font-medium', q.wasAnswered ? 'text-[#22C55E]/60' : 'text-[#F59E0B]/70')}>
+                        Answer: {q.correctAnswer}
+                      </p>
+                    </div>
+
+                    {/* Result badge */}
+                    {q.wasAnswered ? (
+                      <div className="flex-shrink-0 flex flex-col items-center gap-0.5">
+                        <span className="text-2xl">✅</span>
+                        <span className="text-[#22C55E] text-sm font-black">+{q.pointsEarned}</span>
+                      </div>
+                    ) : (
+                      <div className="flex-shrink-0 flex flex-col items-center gap-0.5">
+                        <span className="text-2xl">⏱</span>
+                        <span className="text-white/25 text-xs font-medium">elapsed</span>
+                      </div>
+                    )}
+                  </motion.div>
+                ))}
+              </div>
+            </div>
+
+            {/* Bottom accent */}
+            <div className="h-1.5 w-full" style={{ backgroundColor: ucReviewOverlay.teamColor, opacity: 0.3 }} />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* UC Audio playback — triggered when moderator emits a team's recording */}
+      <AnimatePresence>
+        {ucAudioPlay && (
+          <motion.div
+            key={`audio-${ucAudioPlay.teamId}`}
+            initial={{ opacity: 0, y: 40 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 40 }}
+            className="fixed bottom-8 left-8 z-[60] flex items-center gap-4 rounded-2xl border border-white/10 bg-[#1A1A24]/95 px-5 py-3 backdrop-blur-md shadow-2xl"
+          >
+            <motion.div
+              animate={{ opacity: [1, 0.4, 1] }}
+              transition={{ repeat: Infinity, duration: 1.2 }}
+              className="h-3 w-3 flex-shrink-0 rounded-full"
+              style={{ backgroundColor: ucAudioPlay.teamColor }}
+            />
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/30">Turn Recording</p>
+              <p className="text-sm font-bold text-white">{ucAudioPlay.teamName}</p>
+            </div>
+            <audio
+              autoPlay
+              src={`${getBaseUrl()}/api/sessions/${ucAudioPlay.sessionId}/uc-audio/${ucAudioPlay.teamId}`}
+              className="h-8"
+              onEnded={() => useScreenStore.getState().clearUCAudioPlay()}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Floating emojis — start at bottom edge, float upward and fade */}
       {floatingEmojis.map((fe) => (
         <motion.div
@@ -369,50 +530,106 @@ export function ScreenClient(): React.ReactElement {
             exit={{ opacity: 0 }}
             className="relative flex min-h-screen flex-col overflow-hidden bg-[#08080E]"
           >
-            {/* Background radial glow */}
-            <div
-              className="pointer-events-none absolute inset-0"
-              style={{
-                background: 'radial-gradient(ellipse 70% 50% at 50% 35%, rgba(59,130,246,0.09) 0%, transparent 65%)',
-              }}
-            />
+            {/* Dual radial background */}
+            <div className="pointer-events-none absolute inset-0" style={{
+              background: 'radial-gradient(ellipse 70% 55% at 22% 45%, rgba(59,130,246,0.08) 0%, transparent 60%), radial-gradient(ellipse 55% 50% at 80% 55%, rgba(245,158,11,0.05) 0%, transparent 60%)',
+            }} />
             {/* Animated grid */}
             <motion.div
               animate={{ backgroundPositionY: ['0px', '60px'] }}
               transition={{ duration: 8, repeat: Infinity, ease: 'linear' }}
-              className="pointer-events-none absolute inset-0 opacity-[0.025]"
+              className="pointer-events-none absolute inset-0 opacity-[0.022]"
               style={{
                 backgroundImage: 'linear-gradient(rgba(255,255,255,0.8) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.8) 1px, transparent 1px)',
                 backgroundSize: '60px 60px',
               }}
             />
-            {/* Top accent line */}
+            {/* Top accent gradient */}
             <motion.div
               initial={{ scaleX: 0 }}
               animate={{ scaleX: 1 }}
-              transition={{ duration: 2, ease: 'easeOut' }}
+              transition={{ duration: 2.5, ease: 'easeOut' }}
               className="absolute top-0 left-0 h-px w-full origin-left"
-              style={{ background: 'linear-gradient(90deg, transparent, #3B82F6, transparent)' }}
+              style={{ background: 'linear-gradient(90deg, transparent, #3B82F6 30%, #F59E0B 70%, transparent)' }}
             />
 
             <div className="relative z-10 flex flex-1 flex-col">
-              {/* Main content: logo left, QR right */}
-              <div className="flex flex-1 items-center justify-between px-20 gap-16">
-                {/* Left: branding + join instructions */}
-                <div className="flex flex-col gap-8 flex-1">
-                  <motion.div
-                    initial={{ opacity: 0, y: 30 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ duration: 0.6 }}
+              {/* ─ Header ─ */}
+              <motion.div
+                initial={{ opacity: 0, y: -12 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.5 }}
+                className="flex items-center justify-between px-12 pt-8 pb-2"
+              >
+                <div>
+                  <h1 className="text-6xl font-black tracking-tight leading-none text-white">
+                    APO<span className="text-[#3B82F6]">QUIZ</span>
+                  </h1>
+                  <p className="text-white/25 mt-1.5 text-sm font-medium tracking-[0.18em] uppercase">
+                    Live Bible Quiz Platform
+                  </p>
+                </div>
+                <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-2 rounded-2xl border border-[#22C55E]/20 bg-[#22C55E]/08 px-5 py-2.5">
+                    <motion.div
+                      animate={{ scale: [1, 1.5, 1] }}
+                      transition={{ repeat: Infinity, duration: 2 }}
+                      className="h-2 w-2 rounded-full bg-[#22C55E]"
+                    />
+                    <span className="text-[#22C55E] font-bold text-lg">{connectedTeamIds.length}</span>
+                    <span className="text-white/40 text-sm">teams ready</span>
+                  </div>
+                  <button
+                    onClick={openAudienceList}
+                    className="flex items-center gap-2 rounded-2xl border border-[#F59E0B]/20 bg-[#F59E0B]/08 px-5 py-2.5 hover:bg-[#F59E0B]/15 transition-colors cursor-pointer"
                   >
-                    <h1 className="text-[88px] font-black tracking-tight leading-none text-white">
-                      APO<span className="text-[#3B82F6]">QUIZ</span>
-                    </h1>
-                    <p className="text-white/35 mt-3 text-2xl font-medium tracking-wider">
-                      Live Bible Quiz Platform
-                    </p>
-                  </motion.div>
+                    <Users className="h-4 w-4 text-[#F59E0B]" />
+                    <span className="text-[#F59E0B] font-bold text-lg">{audienceCount}</span>
+                    <span className="text-white/40 text-sm">audience</span>
+                  </button>
+                  {isSupported && !isFullscreen && (
+                    <button
+                      onClick={enterFullscreen}
+                      className="flex items-center gap-2 rounded-2xl border border-white/10 px-4 py-2.5 text-white/30 text-sm hover:text-white/60 transition-colors"
+                    >
+                      <Maximize className="h-4 w-4" />
+                      Fullscreen
+                    </button>
+                  )}
+                </div>
+              </motion.div>
 
+              {/* ─ Main: join info LEFT + QR RIGHT ─ */}
+              <div className="flex flex-1 items-center gap-12 px-12 py-4">
+                {/* Left column */}
+                <div className="flex flex-1 flex-col gap-6">
+                  {/* Session code — hero */}
+                  <AnimatePresence>
+                    {sessionCode && (
+                      <motion.div
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: 0.2, type: 'spring', stiffness: 80 }}
+                      >
+                        <p className="text-white/28 text-[10px] font-black uppercase tracking-[0.38em] mb-3">
+                          Session Code — Enter this on your device
+                        </p>
+                        <div
+                          className="inline-flex rounded-2xl border-2 border-[#F59E0B]/35 bg-[#F59E0B]/[0.055] px-9 py-5"
+                          style={{ boxShadow: '0 0 70px rgba(245,158,11,0.14), inset 0 0 30px rgba(245,158,11,0.04)' }}
+                        >
+                          <p
+                            className="font-mono font-black tracking-[0.18em] text-[#F59E0B]"
+                            style={{ fontSize: 'clamp(2.8rem, 6.5vw, 5.5rem)', textShadow: '0 0 40px rgba(245,158,11,0.55)' }}
+                          >
+                            {sessionCode}
+                          </p>
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+
+                  {/* Server URL + step pills */}
                   {networkInfo && (() => {
                     const serverBase = networkInfo.joinURL.replace(/\/join\/?$/, '')
                     const isCloud = serverBase.startsWith('https://')
@@ -421,71 +638,39 @@ export function ScreenClient(): React.ReactElement {
                       : `${networkInfo.ip}:${networkInfo.port}`
                     return (
                       <motion.div
-                        initial={{ opacity: 0, y: 20 }}
+                        initial={{ opacity: 0, y: 16 }}
                         animate={{ opacity: 1, y: 0 }}
-                        transition={{ delay: 0.3 }}
+                        transition={{ delay: 0.35 }}
                         className="flex flex-col gap-4"
                       >
-                        {/* Manual join instructions */}
-                        <div className="flex flex-col gap-1.5">
-                          <div className="flex items-center gap-2">
-                            <Wifi className="h-4 w-4 text-[#3B82F6]" />
-                            <p className="text-white/40 text-xs font-bold uppercase tracking-widest">Open in browser</p>
-                          </div>
-                          <p className="font-mono text-4xl font-black text-white break-all">
-                            {isCloud
-                              ? displayHost
-                              : <>{networkInfo.ip}<span className="text-[#3B82F6]">:{networkInfo.port}</span></>}
-                          </p>
-                        </div>
-                        {sessionCode && (
-                          <div className="flex flex-col gap-1.5">
-                            <p className="text-white/40 text-xs font-bold uppercase tracking-widest">Enter session code</p>
-                            <p className="font-mono text-5xl font-black tracking-[0.15em] text-[#F59E0B]">
-                              {sessionCode}
+                        <div className="flex items-center gap-3 rounded-xl border border-white/[0.07] bg-white/[0.03] px-5 py-3.5">
+                          <Wifi className="h-4 w-4 text-[#3B82F6] flex-shrink-0" />
+                          <div>
+                            <p className="text-white/25 text-[9px] font-bold uppercase tracking-widest mb-0.5">
+                              {isCloud ? 'Cloud server — open in any browser' : 'LAN — all devices on the same Wi-Fi'}
+                            </p>
+                            <p className="font-mono text-2xl font-black text-white leading-none">
+                              {isCloud
+                                ? displayHost
+                                : <>{networkInfo.ip}<span className="text-[#3B82F6]">:{networkInfo.port}</span></>}
                             </p>
                           </div>
-                        )}
-                        <p className="text-white/25 text-sm">
-                          Audience: go to{' '}
-                          <span className="font-mono text-white/40">{displayHost}</span>{' '}
-                          → select <span className="text-white/40">Audience</span> → enter code + your name
-                        </p>
+                        </div>
+                        <div className="flex gap-2.5">
+                          {[
+                            'Open address in browser',
+                            'Choose your role',
+                            'Enter session code',
+                          ].map((label, n) => (
+                            <div key={n} className="flex flex-1 items-center gap-2.5 rounded-xl border border-white/[0.05] bg-white/[0.025] px-3.5 py-2.5">
+                              <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-[#3B82F6]/20 text-[#3B82F6] text-xs font-black">{n + 1}</span>
+                              <span className="text-white/45 text-xs font-medium leading-snug">{label}</span>
+                            </div>
+                          ))}
+                        </div>
                       </motion.div>
                     )
                   })()}
-
-                  {/* Live stats badges */}
-                  <motion.div
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    transition={{ delay: 0.5 }}
-                    className="flex items-center gap-4"
-                  >
-                    <div className="flex items-center gap-2 rounded-2xl border border-[#22C55E]/20 bg-[#22C55E]/08 px-5 py-3">
-                      <div className="h-2 w-2 rounded-full bg-[#22C55E] animate-pulse" />
-                      <span className="text-[#22C55E] font-bold text-lg">{connectedTeamIds.length}</span>
-                      <span className="text-white/40 text-sm">teams ready</span>
-                    </div>
-                    <button
-                      onClick={openAudienceList}
-                      className="flex items-center gap-2 rounded-2xl border border-[#F59E0B]/20 bg-[#F59E0B]/08 px-5 py-3 transition-colors hover:bg-[#F59E0B]/15 cursor-pointer"
-                      title="View connected audience"
-                    >
-                      <Users className="h-4 w-4 text-[#F59E0B]" />
-                      <span className="text-[#F59E0B] font-bold text-lg">{audienceCount}</span>
-                      <span className="text-white/40 text-sm">audience</span>
-                    </button>
-                    {isSupported && !isFullscreen && (
-                      <button
-                        onClick={enterFullscreen}
-                        className="flex items-center gap-2 rounded-2xl border border-white/10 px-4 py-3 text-white/30 text-sm transition-colors hover:text-white/60"
-                      >
-                        <Maximize className="h-4 w-4" />
-                        Fullscreen
-                      </button>
-                    )}
-                  </motion.div>
                 </div>
 
                 {/* Right: QR code */}
@@ -493,26 +678,42 @@ export function ScreenClient(): React.ReactElement {
                   initial={{ opacity: 0, scale: 0.85 }}
                   animate={{ opacity: 1, scale: 1 }}
                   transition={{ delay: 0.2, type: 'spring', stiffness: 70 }}
-                  className="flex flex-col items-center gap-5"
+                  className="flex flex-shrink-0 flex-col items-center gap-4"
                 >
-                  <div className="rounded-3xl border-2 border-white/10 bg-white p-4 shadow-2xl" style={{ width: 240, height: 240 }}>
+                  <p className="text-white/25 text-[10px] font-black uppercase tracking-[0.3em]">
+                    Audience — scan to join
+                  </p>
+                  <div
+                    className="rounded-3xl border-2 border-white/10 bg-white p-4 shadow-2xl"
+                    style={{ width: 250, height: 250 }}
+                  >
                     {qrDataURL ? (
-                      <img src={qrDataURL} alt="Join QR" className="w-full h-full" />
+                      <img src={qrDataURL} alt="Join QR" className="h-full w-full" />
                     ) : (
-                      <div className="w-full h-full flex items-center justify-center">
-                        <div className="h-12 w-12 rounded-full border-4 border-[#3B82F6]/20 border-t-[#3B82F6] animate-spin" />
+                      <div className="flex h-full w-full items-center justify-center">
+                        <div className="h-12 w-12 animate-spin rounded-full border-4 border-[#3B82F6]/20 border-t-[#3B82F6]" />
                       </div>
                     )}
                   </div>
-                  <p className="text-white/30 text-sm font-medium tracking-wider uppercase">Audience — scan to join</p>
+                  <p className="max-w-[200px] text-center text-white/20 text-xs">
+                    Scan with camera, select Audience, enter your name
+                  </p>
                 </motion.div>
               </div>
 
-              {/* Team cards at the bottom */}
+              {/* ─ Team status strip ─ */}
               {scores.length > 0 && (
-                <div className="px-20 pb-12">
+                <motion.div
+                  initial={{ opacity: 0, y: 16 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.5 }}
+                  className="px-12 pb-10"
+                >
+                  <p className="text-white/20 text-[9px] font-black uppercase tracking-[0.35em] mb-3">
+                    Teams — {connectedTeamIds.length} of {scores.length} connected
+                  </p>
                   <div
-                    className="grid gap-3"
+                    className="grid gap-2.5"
                     style={{ gridTemplateColumns: `repeat(${Math.min(scores.length, 6)}, 1fr)` }}
                   >
                     {scores
@@ -523,229 +724,219 @@ export function ScreenClient(): React.ReactElement {
                         return (
                           <motion.div
                             key={s.teamId}
-                            initial={{ opacity: 0, y: 20 }}
+                            initial={{ opacity: 0, y: 12 }}
                             animate={{ opacity: 1, y: 0 }}
-                            transition={{ delay: 0.6 + i * 0.06, type: 'spring', stiffness: 80 }}
-                            className="relative flex flex-col items-center gap-2.5 rounded-2xl border-2 p-4 overflow-hidden transition-all"
+                            transition={{ delay: 0.55 + i * 0.05, type: 'spring', stiffness: 90 }}
+                            className="relative flex items-center gap-3 overflow-hidden rounded-xl border px-4 py-3 transition-all"
                             style={{
-                              borderColor: online ? s.teamColor : 'rgba(255,255,255,0.08)',
-                              backgroundColor: online ? `${s.teamColor}0E` : 'rgba(255,255,255,0.02)',
+                              borderColor: online ? `${s.teamColor}45` : 'rgba(255,255,255,0.05)',
+                              backgroundColor: online ? `${s.teamColor}0A` : 'rgba(255,255,255,0.02)',
                             }}
                           >
-                            {/* Top stripe */}
+                            <div className="absolute top-0 left-0 right-0 h-px" style={{ backgroundColor: online ? s.teamColor : 'transparent' }} />
                             <div
-                              className="absolute top-0 left-0 right-0 h-0.5 transition-all"
-                              style={{ backgroundColor: online ? s.teamColor : 'transparent' }}
-                            />
-                            <div className="flex items-center gap-2">
-                              <div className="h-4 w-4 rounded-full" style={{ backgroundColor: s.teamColor }} />
-                              <motion.div
-                                animate={online ? { scale: [1, 1.3, 1] } : {}}
-                                transition={{ repeat: Infinity, duration: 2, ease: 'easeInOut' }}
-                                className="h-2 w-2 rounded-full"
-                                style={{ backgroundColor: online ? '#22C55E' : '#374151' }}
-                              />
+                              className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full text-sm font-black text-white"
+                              style={{ backgroundColor: s.teamColor }}
+                            >
+                              {s.teamName[0]?.toUpperCase()}
                             </div>
-                            <p className="text-center text-sm font-black text-white">{s.teamName}</p>
-                            <p className="text-xs font-medium" style={{ color: online ? '#22C55E' : 'rgba(255,255,255,0.25)' }}>
-                              {online ? 'Connected' : 'Waiting…'}
-                            </p>
+                            <div className="flex min-w-0 flex-1 flex-col">
+                              <p className="truncate text-sm font-black text-white leading-tight">{s.teamName}</p>
+                              <div className="mt-1 flex items-center gap-1.5">
+                                <motion.div
+                                  className="h-1.5 w-1.5 rounded-full"
+                                  style={{ backgroundColor: online ? '#22C55E' : '#374151' }}
+                                  animate={online ? { scale: [1, 1.6, 1] } : {}}
+                                  transition={{ repeat: Infinity, duration: 2 }}
+                                />
+                                <p className="text-[10px] font-medium" style={{ color: online ? '#22C55E' : 'rgba(255,255,255,0.2)' }}>
+                                  {online ? 'Connected' : 'Waiting…'}
+                                </p>
+                              </div>
+                            </div>
                           </motion.div>
                         )
                       })}
                   </div>
-                </div>
+                </motion.div>
               )}
             </div>
           </motion.div>
         )}
 
         {/* ── AUDIENCE VOTE ───────────────────────────────────────────── */}
-        {status === SessionStatus.AUDIENCE_VOTE && voteData && (
-          <motion.div
-            key="vote"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="relative flex min-h-screen flex-col overflow-hidden bg-[#08080E]"
-          >
-            {/* Background radial */}
-            <div
-              className="pointer-events-none absolute inset-0"
-              style={{ background: 'radial-gradient(ellipse 70% 45% at 50% 30%, rgba(245,158,11,0.07) 0%, transparent 65%)' }}
-            />
+        {status === SessionStatus.AUDIENCE_VOTE && voteData && (() => {
+          const numTeams = voteData.teams.length
 
-            {/* Header */}
-            <div className="relative z-10 flex flex-col items-center pt-14 pb-6">
-              <motion.p
-                initial={{ opacity: 0, y: -12 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.1 }}
-                className="text-[#F59E0B] text-sm font-bold uppercase tracking-[0.3em] mb-2"
-              >
-                🔮 Audience Ranking Prediction
-              </motion.p>
-              <motion.h2
-                initial={{ opacity: 0, y: -8 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.18 }}
-                className="text-6xl font-black text-white tracking-tight"
-              >
-                Who wins this round?
-              </motion.h2>
-              <motion.p
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ delay: 0.3 }}
-                className="text-white/30 mt-3 text-xl"
-              >
-                Audience ranks all teams — who do they believe will finish first?
-              </motion.p>
-            </div>
+          // Weighted scoring: 1st = numTeams pts, 2nd = numTeams-1, … last = 1pt
+          const teamsRanked = voteData.teams.map((t) => {
+            const tally = positionTally[t.id] ?? {}
+            let weightedScore = 0
+            const breakdown: { pos: number; emoji: string; count: number; weight: number }[] = []
+            for (let pos = 1; pos <= numTeams; pos++) {
+              const count = tally[pos.toString()] ?? 0
+              const weight = numTeams - pos + 1
+              weightedScore += count * weight
+              const emoji = pos === 1 ? '🥇' : pos === 2 ? '🥈' : pos === 3 ? '🥉' : `${pos}.`
+              breakdown.push({ pos, emoji, count, weight })
+            }
+            return { ...t, weightedScore, breakdown }
+          }).sort((a, b) => b.weightedScore - a.weightedScore)
 
-            {/* Position legend */}
+          const maxWeightedScore = Math.max(1, ...teamsRanked.map((t) => t.weightedScore))
+          const rankMedals = ['🥇', '🥈', '🥉']
+
+          return (
             <motion.div
+              key="vote"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
-              transition={{ delay: 0.4 }}
-              className="relative z-10 flex justify-center gap-6 mb-8"
+              exit={{ opacity: 0 }}
+              className="relative flex min-h-screen flex-col overflow-hidden bg-[#08080E]"
             >
-              {[
-                { label: '🥇 1st pick', color: '#F59E0B' },
-                { label: '🥈 2nd pick', color: '#94A3B8' },
-                { label: '🥉 3rd pick', color: '#92400E' },
-              ].map((item) => (
-                <div key={item.label} className="flex items-center gap-2">
-                  <div className="h-3 w-3 rounded-full" style={{ backgroundColor: item.color }} />
-                  <span className="text-white/50 text-sm font-medium">{item.label}</span>
-                </div>
-              ))}
-            </motion.div>
+              {/* Background radial */}
+              <div className="pointer-events-none absolute inset-0" style={{
+                background: 'radial-gradient(ellipse 70% 50% at 50% 25%, rgba(245,158,11,0.07) 0%, transparent 65%)',
+              }} />
 
-            {/* Team ranking bars */}
-            <div className="relative z-10 flex-1 flex flex-col justify-center px-20 gap-5">
-              {voteData.teams.map((t, teamIdx) => {
-                const teamPositions = positionTally[t.id] ?? {}
-                // How many ranked this team at each position
-                const pos1 = teamPositions['1'] ?? 0
-                const pos2 = teamPositions['2'] ?? 0
-                const pos3 = teamPositions['3'] ?? 0
-                const posRest = Object.entries(teamPositions)
-                  .filter(([k]) => Number(k) > 3)
-                  .reduce((s, [, v]) => s + v, 0)
-                const totalForTeam = pos1 + pos2 + pos3 + posRest
+              {/* Header */}
+              <div className="relative z-10 flex flex-col items-center pt-10 pb-5">
+                <motion.p
+                  initial={{ opacity: 0, y: -10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.1 }}
+                  className="text-[#F59E0B] text-xs font-black uppercase tracking-[0.35em] mb-2"
+                >
+                  🔮 Audience Prediction
+                </motion.p>
+                <motion.h2
+                  initial={{ opacity: 0, y: -8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.18 }}
+                  className="text-5xl font-black text-white tracking-tight"
+                >
+                  How does the audience rank the teams?
+                </motion.h2>
+                <motion.p
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  transition={{ delay: 0.28 }}
+                  className="text-white/30 mt-2 text-base"
+                >
+                  Each voter ranks all {numTeams} teams — weighted score (1st={numTeams}pts, 2nd={numTeams - 1}pts…) determines the likely leader
+                </motion.p>
+              </div>
 
-                // Each segment as % of total voters
-                const pct1 = totalVotes > 0 ? (pos1 / totalVotes) * 100 : 0
-                const pct2 = totalVotes > 0 ? (pos2 / totalVotes) * 100 : 0
-                const pct3 = totalVotes > 0 ? (pos3 / totalVotes) * 100 : 0
-                const pctRest = totalVotes > 0 ? (posRest / totalVotes) * 100 : 0
-                const totalPct = pct1 + pct2 + pct3 + pctRest
+              {/* Ranked list */}
+              <div className="relative z-10 flex flex-1 flex-col justify-center gap-3.5 px-14 pb-4">
+                {teamsRanked.map((t, rank) => {
+                  const barPct = maxWeightedScore > 0 ? (t.weightedScore / maxWeightedScore) * 100 : 0
+                  const isLeader = rank === 0 && t.weightedScore > 0
 
-                return (
-                  <motion.div
-                    key={t.id}
-                    initial={{ opacity: 0, x: -40 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    transition={{ delay: 0.35 + teamIdx * 0.08, type: 'spring', stiffness: 70 }}
-                    className="flex items-center gap-6"
-                  >
-                    {/* Team identity */}
-                    <div className="flex items-center gap-3 w-44 flex-shrink-0">
-                      <div className="h-5 w-5 rounded-full flex-shrink-0" style={{ backgroundColor: t.color }} />
-                      <span className="font-black text-white text-xl truncate">{t.name}</span>
-                    </div>
+                  return (
+                    <motion.div
+                      key={t.id}
+                      layout
+                      initial={{ opacity: 0, x: -40 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ delay: 0.28 + rank * 0.08, type: 'spring', stiffness: 70 }}
+                      className="relative flex items-center gap-5 overflow-hidden rounded-2xl border-2 px-6 py-4"
+                      style={{
+                        borderColor: isLeader ? `${t.color}55` : 'rgba(255,255,255,0.06)',
+                        backgroundColor: isLeader ? `${t.color}0A` : 'rgba(255,255,255,0.02)',
+                        boxShadow: isLeader ? `0 0 40px ${t.color}10` : 'none',
+                      }}
+                    >
+                      {/* Leader top stripe */}
+                      {isLeader && (
+                        <div className="absolute top-0 left-0 right-0 h-[2px]" style={{ backgroundColor: t.color }} />
+                      )}
 
-                    {/* Stacked position bar */}
-                    <div className="flex-1 relative">
-                      <div className="h-12 rounded-2xl overflow-hidden bg-white/[0.04] border border-white/[0.06] flex">
-                        {/* 1st pick — gold */}
-                        <motion.div
-                          animate={{ width: `${pct1}%` }}
-                          transition={{ type: 'spring', stiffness: 60, damping: 18 }}
-                          className="h-full flex items-center justify-end overflow-hidden"
-                          style={{ backgroundColor: '#F59E0B', minWidth: pct1 > 0 ? 4 : 0 }}
-                        />
-                        {/* 2nd pick — silver */}
-                        <motion.div
-                          animate={{ width: `${pct2}%` }}
-                          transition={{ type: 'spring', stiffness: 60, damping: 18 }}
-                          className="h-full overflow-hidden"
-                          style={{ backgroundColor: '#94A3B8', minWidth: pct2 > 0 ? 4 : 0 }}
-                        />
-                        {/* 3rd pick — bronze */}
-                        <motion.div
-                          animate={{ width: `${pct3}%` }}
-                          transition={{ type: 'spring', stiffness: 60, damping: 18 }}
-                          className="h-full overflow-hidden"
-                          style={{ backgroundColor: '#92400E', minWidth: pct3 > 0 ? 4 : 0 }}
-                        />
-                        {/* 4th+ pick — dimmer team color */}
-                        <motion.div
-                          animate={{ width: `${pctRest}%` }}
-                          transition={{ type: 'spring', stiffness: 60, damping: 18 }}
-                          className="h-full overflow-hidden"
-                          style={{ backgroundColor: `${t.color}55`, minWidth: pctRest > 0 ? 4 : 0 }}
-                        />
+                      {/* Rank badge */}
+                      <div className="flex w-12 flex-shrink-0 flex-col items-center">
+                        <span className="text-3xl leading-none">
+                          {rankMedals[rank] ?? `${rank + 1}`}
+                        </span>
+                        {rank >= 3 && (
+                          <span className="text-white/25 text-xs font-black tabular-nums">{rank + 1}th</span>
+                        )}
                       </div>
 
-                      {/* Segment labels shown inside bar when large enough */}
-                      <div className="absolute inset-0 flex items-center pointer-events-none">
-                        <div className="flex h-full w-full">
-                          {pct1 >= 8 && (
-                            <div
-                              className="flex items-center justify-center text-xs font-black text-black/70"
-                              style={{ width: `${pct1}%` }}
-                            >
-                              {Math.round(pct1)}%
-                            </div>
+                      {/* Team + bar + breakdown */}
+                      <div className="flex min-w-0 flex-1 flex-col gap-2">
+                        <div className="flex items-center gap-3">
+                          <div className="h-3.5 w-3.5 flex-shrink-0 rounded-full" style={{ backgroundColor: t.color }} />
+                          <span className="text-lg font-black text-white truncate">{t.name}</span>
+                          {isLeader && totalVotes > 0 && (
+                            <span className="rounded-full border border-[#F59E0B]/30 bg-[#F59E0B]/10 px-2.5 py-0.5 text-[10px] font-black uppercase tracking-[0.2em] text-[#F59E0B]">
+                              Likely Leader
+                            </span>
                           )}
                         </div>
+
+                        {/* Score bar */}
+                        <div className="h-7 overflow-hidden rounded-xl border border-white/[0.05] bg-white/[0.03]">
+                          <motion.div
+                            animate={{ width: `${barPct}%` }}
+                            transition={{ type: 'spring', stiffness: 50, damping: 16 }}
+                            className="h-full rounded-xl"
+                            style={{
+                              background: `linear-gradient(90deg, ${t.color}70, ${t.color})`,
+                              minWidth: t.weightedScore > 0 ? 8 : 0,
+                            }}
+                          />
+                        </div>
+
+                        {/* Per-position vote pills */}
+                        <div className="flex flex-wrap items-center gap-2">
+                          {t.breakdown.map(({ pos, emoji, count, weight }) => (
+                            <div
+                              key={pos}
+                              className="flex items-center gap-1.5 rounded-lg border border-white/[0.07] bg-white/[0.04] px-2.5 py-1"
+                            >
+                              <span className="text-sm leading-none">{emoji}</span>
+                              <span className="text-white font-black text-sm tabular-nums">{count}</span>
+                              <span className="text-white/25 text-[10px] font-medium">×{weight}pt</span>
+                            </div>
+                          ))}
+                        </div>
                       </div>
-                    </div>
 
-                    {/* Stats column */}
-                    <div className="w-28 flex-shrink-0 text-right">
-                      <p className="text-xl font-black tabular-nums" style={{ color: t.color }}>
-                        {totalForTeam}
-                      </p>
-                      <p className="text-white/30 text-xs font-medium">
-                        {totalVotes > 0 ? `${Math.round(totalPct)}% voted` : '—'}
-                      </p>
-                      {pos1 > 0 && (
-                        <p className="text-[#F59E0B] text-xs font-bold">
-                          {pos1} × 🥇
-                        </p>
-                      )}
-                    </div>
-                  </motion.div>
-                )
-              })}
-            </div>
-
-            {/* Footer vote count */}
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={{ delay: 0.6 }}
-              className="relative z-10 flex justify-center items-center gap-4 pb-12 pt-6"
-            >
-              <div className="flex items-center gap-2 rounded-2xl border border-[#F59E0B]/20 bg-[#F59E0B]/08 px-6 py-3">
-                <Users className="h-4 w-4 text-[#F59E0B]" />
-                <span className="text-[#F59E0B] font-black text-2xl tabular-nums">{totalVotes}</span>
-                <span className="text-white/40 text-sm">votes cast</span>
+                      {/* Weighted score */}
+                      <div className="w-24 flex-shrink-0 text-right">
+                        <motion.p layout className="text-3xl font-black tabular-nums" style={{ color: isLeader ? t.color : 'rgba(255,255,255,0.7)' }}>
+                          {t.weightedScore}
+                        </motion.p>
+                        <p className="text-white/25 text-[10px] font-medium mt-0.5">weighted pts</p>
+                      </div>
+                    </motion.div>
+                  )
+                })}
               </div>
-              <button
-                onClick={openAudienceList}
-                className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-6 py-3 transition-colors hover:bg-white/[0.08] cursor-pointer"
-                title="View connected audience"
+
+              {/* Footer */}
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ delay: 0.6 }}
+                className="relative z-10 flex items-center justify-center gap-4 pb-10 pt-3"
               >
-                <span className="text-white/40 text-sm">audience on phone</span>
-                <span className="text-white/60 font-bold text-xl tabular-nums">{audienceCount}</span>
-              </button>
+                <div className="flex items-center gap-2 rounded-2xl border border-[#F59E0B]/20 bg-[#F59E0B]/08 px-6 py-3">
+                  <Users className="h-4 w-4 text-[#F59E0B]" />
+                  <span className="text-[#F59E0B] font-black text-2xl tabular-nums">{totalVotes}</span>
+                  <span className="text-white/40 text-sm">votes cast</span>
+                </div>
+                <button
+                  onClick={openAudienceList}
+                  className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-6 py-3 hover:bg-white/[0.08] transition-colors cursor-pointer"
+                >
+                  <span className="text-white/40 text-sm">audience connected</span>
+                  <span className="text-white/60 font-bold text-xl tabular-nums">{audienceCount}</span>
+                </button>
+              </motion.div>
             </motion.div>
-          </motion.div>
-        )}
+          )
+        })()}
 
         {/* ── ROUND INTRO ─────────────────────────────────────────────── */}
         {status === SessionStatus.ROUND_INTRO && (
@@ -1342,7 +1533,8 @@ export function ScreenClient(): React.ReactElement {
               currentQuestion={ucState.currentQuestion}
               timeLeft={ucTimeLeft}
               lastAction={ucState.lastAction}
-              activeTeamName={ucState.teams.find((t) => t.isActive)?.teamName}
+              activeTeamName={ucState.activeTeamName ?? ucState.teams.find((t) => t.isActive)?.teamName}
+              activeTeamColor={ucState.activeTeamColor ?? ucState.teams.find((t) => t.isActive)?.teamColor}
             />
           </motion.div>
         )}

@@ -8,6 +8,7 @@ import {
   ConnectedSocket,
   MessageBody,
 } from '@nestjs/websockets'
+import { randomBytes } from 'crypto'
 import { Server, Socket } from 'socket.io'
 import { PrismaService } from '../prisma/prisma.service'
 import { AuthService } from '../auth/auth.service'
@@ -17,6 +18,7 @@ import {
   type CachedRound,
   type CachedTeamScore,
 } from './session-cache'
+import { ucAudioStore } from '../session/session.controller'
 import { mapPrismaQuestion, type PrismaQuestionWithOptions } from './question-mapper'
 import {
   SERVER_EVENTS,
@@ -64,6 +66,7 @@ interface JoinPayload {
   role: UserRole
   sessionId?: string
   teamCode?: string // single join credential for team role
+  deviceToken?: string // device-binding token returned on first team join
   teamId?: string
   pin?: string
   audienceId?: string
@@ -187,7 +190,7 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
         })
         return
       }
-      await this.joinAsTeamByCode(client, payload.teamCode)
+      await this.joinAsTeamByCode(client, payload.teamCode, payload.deviceToken)
       return
     }
 
@@ -203,7 +206,7 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     const session = (await this.prisma.session.findFirst({
       where: { OR: [{ id: sessionId }, { sessionCode: upper }] },
       include: {
-        quiz: { select: { id: true, defaultAudienceLevel: true } },
+        quiz: { select: { id: true, defaultAudienceLevel: true, status: true } },
         sessionTeams: {
           include: {
             team: {
@@ -226,11 +229,12 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     const resolvedSessionId = session.id
     await this.ensureCache(session)
 
-    // Block audience from joining before the host starts the session
-    if (role === UserRole.AUDIENCE && session.status === 'pending') {
+    // Block everyone from joining until the host launches the quiz.
+    // To the outside world the session does not exist yet — give a generic message.
+    if (session.status === 'pending' || session.quiz?.status === 'draft') {
       client.emit(SERVER_EVENTS.ERROR, {
-        code: 'SESSION_NOT_STARTED',
-        message: 'Quiz has not started yet — please wait for the host to open the session',
+        code: 'QUIZ_NOT_STARTED',
+        message: 'This quiz is not available yet. Please wait for your host to start the session.',
       })
       return
     }
@@ -252,7 +256,7 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
   // ─── Join helpers ─────────────────────────────────────────────────────────────
 
-  private async joinAsTeamByCode(client: Socket, teamCode: string): Promise<void> {
+  private async joinAsTeamByCode(client: Socket, teamCode: string, deviceToken?: string): Promise<void> {
     const tc = teamCode.toUpperCase()
 
     const team = await this.prisma.team.findUnique({
@@ -262,13 +266,17 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     if (!team) {
       client.emit(SERVER_EVENTS.ERROR, {
         code: 'INVALID_JOIN_CODE',
-        message: 'Invalid team join code',
+        message: 'Invalid team join code. Check the code and try again.',
       })
       return
     }
 
     const session = await this.prisma.session.findFirst({
-      where: { quizId: team.quizId, status: { notIn: ['completed', 'pending'] } },
+      where: {
+        quizId: team.quizId,
+        status: { notIn: ['completed', 'pending'] },
+        quiz: { status: { not: 'draft' } },
+      },
       orderBy: { createdAt: 'desc' },
       include: {
         quiz: { select: { id: true, defaultAudienceLevel: true } },
@@ -287,8 +295,8 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     })
     if (!session) {
       client.emit(SERVER_EVENTS.ERROR, {
-        code: 'NO_ACTIVE_SESSION',
-        message: 'No active session for this team',
+        code: 'QUIZ_NOT_STARTED',
+        message: 'This quiz has not started yet. Please wait for your host to launch the session.',
       })
       return
     }
@@ -297,9 +305,33 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     if (!st) {
       client.emit(SERVER_EVENTS.ERROR, {
         code: 'TEAM_NOT_IN_SESSION',
-        message: 'Team is not in the current session',
+        message: 'Team is not part of this session.',
       })
       return
+    }
+
+    // ── Device token check ──────────────────────────────────────────────────────
+    // If the slot has been claimed, only the device that holds the matching token
+    // is allowed in. Any other device (including no token) is rejected so that
+    // impostors cannot displace the real team mid-quiz.
+    let grantedToken: string
+    if (st.deviceToken) {
+      if (!deviceToken || deviceToken !== st.deviceToken) {
+        client.emit(SERVER_EVENTS.ERROR, {
+          code: 'TEAM_SLOT_CLAIMED',
+          message: 'This team has already joined from another device. Ask your host to reset the slot if you need to reconnect.',
+        })
+        return
+      }
+      // Same device reconnecting — re-use the existing token
+      grantedToken = st.deviceToken
+    } else {
+      // First claim — mint a new token and bind it to this device
+      grantedToken = randomBytes(32).toString('hex')
+      await this.prisma.sessionTeam.updateMany({
+        where: { teamId: team.id, sessionId: session.id },
+        data: { deviceToken: grantedToken },
+      })
     }
 
     await this.ensureCache(session)
@@ -342,11 +374,38 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       name: team.name,
       color: team.color,
       sessionId: session.id,
+      deviceToken: grantedToken,
     })
     client.emit(SERVER_EVENTS.SESSION_STATE, this.buildStateSnapshot(session.id))
     this.server
       .to(`session:${session.id}`)
       .emit('team:connected', { teamId: team.id, teamName: team.name })
+  }
+
+  // ─── team:logout — client signals intentional departure ─────────────────────
+  // Clears the device token so the team can re-join fresh (with the same or a new
+  // device) without needing a host slot reset.
+
+  @SubscribeMessage(TEAM_EVENTS.LOGOUT)
+  async handleTeamLogout(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { teamId: string; sessionId: string },
+  ): Promise<void> {
+    const { teamId, sessionId } = payload ?? {}
+    if (!teamId || !sessionId) return
+
+    await this.prisma.sessionTeam
+      .updateMany({
+        where: { teamId, sessionId },
+        data: { deviceToken: null, connected: false, socketId: null },
+      })
+      .catch(() => undefined)
+
+    const cache = activeSessions.get(sessionId)
+    if (cache) cache.connectedTeamIds.delete(teamId)
+
+    this.server.to(`session:${sessionId}`).emit('team:disconnected', { teamId })
+    client.emit('team:logged:out', { ok: true })
   }
 
   private async joinAsModerator(
@@ -742,6 +801,11 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
         // ⏱ Timer (single active team at a time)
         timerDeadline: 0,
         timerHandle: null,
+
+        // 📝 Review tracking
+        originalQueues: new Map(),
+        turnCorrectIds: new Map(),
+        turnReviews: new Map(),
       }
 
       cache.tileBlitz = undefined
@@ -1900,10 +1964,15 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     }
 
     const round = cache.rounds[cache.currentRoundIndex]
-    const durationMs = (round?.timerSeconds ?? GAME_CONSTANTS.UC_DEFAULT_TIMER_SECONDS) * 1000
+    const configuredSeconds = round?.timerSeconds ?? GAME_CONSTANTS.UC_DEFAULT_TIMER_SECONDS
+    const durationMs = (configuredSeconds + GAME_CONSTANTS.UC_GRACE_SECONDS) * 1000
 
     // 🎯 Activate team (DO NOT rebuild queue)
     uc.activeTeamId = teamId
+
+    // Snapshot original queue for this team's turn (used for review after turn ends)
+    uc.originalQueues.set(teamId, [...(uc.teamQueues.get(teamId) ?? [])])
+    uc.turnCorrectIds.set(teamId, [])
 
     // ⏱ Start timer
     uc.timerDeadline = Date.now() + durationMs
@@ -2019,6 +2088,14 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       if (cache.currentRoundId) {
         td.roundScores[cache.currentRoundId] = (td.roundScores[cache.currentRoundId] ?? 0) + points
       }
+    }
+
+    // 📝 Record this question as correctly answered for review
+    const currentQuestion = queue[0]
+    if (currentQuestion) {
+      const correctIds = uc.turnCorrectIds.get(teamId) ?? []
+      correctIds.push(currentQuestion.id)
+      uc.turnCorrectIds.set(teamId, correctIds)
     }
 
     // 📉 REMOVE QUESTION (core mechanic)
@@ -2137,6 +2214,183 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     const cache = activeSessions.get(sessionId)
     if (!cache || cache.status !== SessionStatus.UC_ACTIVE) return
     await this.endUCTeamTurn(sessionId, cache, 'manual')
+  }
+
+  // ─── Ultimate Challenge: moderator broadcasts a team's review to projector ────
+
+  @SubscribeMessage(MODERATOR_EVENTS.UC_EMIT_REVIEW)
+  handleUCEmitReview(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { sessionId: string; teamId: string },
+  ): void {
+    if (!this.isModerator(client)) return
+    const { sessionId, teamId } = payload ?? {}
+    const cache = activeSessions.get(sessionId)
+    if (!cache) return
+    const review = cache.ultimateChallenge?.turnReviews.get(teamId)
+    if (!review) return
+    // UC_REVIEW_SHOW targets the projector overlay; UC_TURN_REVIEW is for silent moderator accumulation
+    this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.UC_REVIEW_SHOW, review)
+  }
+
+  // ─── Ultimate Challenge: moderator dismisses projector review overlay ─────────
+
+  @SubscribeMessage(MODERATOR_EVENTS.UC_HIDE_REVIEW)
+  handleUCHideReview(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { sessionId: string },
+  ): void {
+    if (!this.isModerator(client)) return
+    const { sessionId } = payload ?? {}
+    this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.UC_REVIEW_HIDE)
+  }
+
+  // ─── Ultimate Challenge: moderator overrides a missed question as correct ─────
+
+  @SubscribeMessage(MODERATOR_EVENTS.UC_OVERRIDE_ANSWER)
+  handleUCOverrideAnswer(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { sessionId: string; teamId: string; questionId: string },
+  ): void {
+    if (!this.isModerator(client)) return
+    const { sessionId, teamId, questionId } = payload ?? {}
+    const cache = activeSessions.get(sessionId)
+    if (!cache) return
+    const uc = cache.ultimateChallenge
+    if (!uc) return
+    const review = uc.turnReviews.get(teamId)
+    if (!review) return
+
+    const q = review.questions.find((x) => x.questionId === questionId)
+    if (!q || q.wasAnswered) return // already correct, nothing to do
+
+    const round = cache.rounds[cache.currentRoundIndex]
+    const pts = round?.pointsPerQuestion ?? GAME_CONSTANTS.UC_DEFAULT_POINTS_PER_CORRECT
+
+    // Update review record
+    q.wasAnswered = true
+    q.pointsEarned = pts
+    review.totalCorrect += 1
+    review.totalPoints += pts
+
+    // Award points to team in live scores
+    const td = cache.teamScores.get(teamId)
+    if (td) {
+      td.score += pts
+      if (cache.currentRoundId) {
+        td.roundScores[cache.currentRoundId] = (td.roundScores[cache.currentRoundId] ?? 0) + pts
+      }
+      // Persist score async
+      void this.prisma.sessionTeam
+        .updateMany({
+          where: { teamId, sessionId },
+          data: { score: td.score, roundScores: JSON.stringify(td.roundScores) },
+        })
+        .catch(() => undefined)
+    }
+
+    // Broadcast updated review + scores
+    this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.UC_TURN_REVIEW, review)
+    this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.SCORES_UPDATE, {
+      scores: this.scoresArray(cache),
+    })
+  }
+
+  // ─── Ultimate Challenge: moderator removes a previously awarded override ──────
+
+  @SubscribeMessage(MODERATOR_EVENTS.UC_REMOVE_OVERRIDE)
+  handleUCRemoveOverride(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { sessionId: string; teamId: string; questionId: string },
+  ): void {
+    if (!this.isModerator(client)) return
+    const { sessionId, teamId, questionId } = payload ?? {}
+    const cache = activeSessions.get(sessionId)
+    if (!cache) return
+    const uc = cache.ultimateChallenge
+    if (!uc) return
+    const review = uc.turnReviews.get(teamId)
+    if (!review) return
+
+    const q = review.questions.find((x) => x.questionId === questionId)
+    if (!q || !q.wasAnswered || q.pointsEarned <= 0) return // nothing to remove
+
+    const pts = q.pointsEarned
+
+    // Revert review record
+    q.wasAnswered = false
+    q.pointsEarned = 0
+    review.totalCorrect = Math.max(0, review.totalCorrect - 1)
+    review.totalPoints = Math.max(0, review.totalPoints - pts)
+
+    // Deduct points from live scores
+    const td = cache.teamScores.get(teamId)
+    if (td) {
+      td.score = Math.max(0, td.score - pts)
+      if (cache.currentRoundId) {
+        td.roundScores[cache.currentRoundId] = Math.max(
+          0,
+          (td.roundScores[cache.currentRoundId] ?? 0) - pts,
+        )
+      }
+      void this.prisma.sessionTeam
+        .updateMany({
+          where: { teamId, sessionId },
+          data: { score: td.score, roundScores: JSON.stringify(td.roundScores) },
+        })
+        .catch(() => undefined)
+    }
+
+    // Broadcast updated review + scores
+    this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.UC_TURN_REVIEW, review)
+    this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.SCORES_UPDATE, {
+      scores: this.scoresArray(cache),
+    })
+  }
+
+  // ─── Ultimate Challenge: team-side skip (active team only) ───────────────────
+
+  @SubscribeMessage(TEAM_EVENTS.UC_SKIP)
+  handleTeamUCSkip(
+    @ConnectedSocket() _client: Socket,
+    @MessageBody() payload: { sessionId: string; teamId: string },
+  ): void {
+    const { sessionId, teamId } = payload ?? {}
+    const cache = activeSessions.get(sessionId)
+    if (!cache || cache.status !== SessionStatus.UC_ACTIVE) return
+
+    const uc = cache.ultimateChallenge
+    if (!uc?.activeTeamId || uc.activeTeamId !== teamId) return // only the active team can skip
+
+    const queue = uc.teamQueues.get(teamId)
+    if (!queue || queue.length === 0) return
+
+    queue.push(queue.shift()!)
+
+    this.server
+      .to(`session:${sessionId}`)
+      .emit(SERVER_EVENTS.UC_STATE, this.buildUCState(sessionId, cache))
+  }
+
+  // ─── Ultimate Challenge: moderator plays a team's audio on the projector ─────
+
+  @SubscribeMessage(MODERATOR_EVENTS.UC_EMIT_AUDIO)
+  handleUCEmitAudio(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { sessionId: string; teamId: string },
+  ): void {
+    if (!this.isModerator(client)) return
+    const { sessionId, teamId } = payload ?? {}
+    const cache = activeSessions.get(sessionId)
+    if (!cache) return
+    const td = cache.teamScores.get(teamId)
+    if (!ucAudioStore.has(`${sessionId}:${teamId}`)) return
+    this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.UC_AUDIO_PLAY, {
+      sessionId,
+      teamId,
+      teamName: td?.teamName ?? teamId,
+      teamColor: td?.teamColor ?? '#888',
+    })
   }
 
   // ─── Clue Reveal: team buzz-in ───────────────────────────────────────────────
@@ -2650,6 +2904,26 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     // 🧠 mark completion if not already
     uc.teamsCompleted.add(teamId)
 
+    // 📝 Build turn review
+    const original = uc.originalQueues.get(teamId) ?? []
+    const correctIdSet = new Set(uc.turnCorrectIds.get(teamId) ?? [])
+    const review = {
+      teamId,
+      teamName: td?.teamName ?? teamId,
+      teamColor: td?.teamColor ?? '#888',
+      questions: original.map((q) => ({
+        questionId: q.id,
+        questionText: q.text,
+        correctAnswer: q.correctAnswer,
+        wasAnswered: correctIdSet.has(q.id),
+        pointsEarned: correctIdSet.has(q.id) ? pointsPerQ : 0,
+      })),
+      totalCorrect: correctCount,
+      totalPoints: pointsEarned,
+      completedAt: Date.now(),
+    }
+    uc.turnReviews.set(teamId, review)
+
     // 📡 emit team finished
     this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.UC_TEAM_DONE, {
       teamId,
@@ -2661,6 +2935,9 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
       isLastTeam: false, // computed below
     })
+
+    // 📡 emit turn review to moderator + screen (moderator stores all, screen displays on demand)
+    this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.UC_TURN_REVIEW, review)
 
     // 📡 scores update
     this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.SCORES_UPDATE, {

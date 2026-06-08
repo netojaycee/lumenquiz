@@ -18,6 +18,7 @@ export interface RejoinPayload {
   role: UserRole
   sessionId?: string
   teamCode?: string // single join credential for team role (replaces sessionId + pin)
+  deviceToken?: string // device-binding token received on first team join; sent on every rejoin
   teamId?: string
   pin?: string
   audienceId?: string
@@ -377,6 +378,58 @@ export interface UCSkipPayload {
 
 export interface UCEndTurnPayload {
   sessionId: string
+}
+
+export interface UCTurnReviewQuestion {
+  questionId: string
+  questionText: string
+  correctAnswer: string
+  wasAnswered: boolean
+  pointsEarned: number
+}
+
+export interface UCTurnReviewPayload {
+  teamId: string
+  teamName: string
+  teamColor: string
+  questions: UCTurnReviewQuestion[]
+  totalCorrect: number
+  totalPoints: number
+  completedAt: number
+}
+
+export interface UCEmitReviewPayload {
+  sessionId: string
+  teamId: string
+}
+
+export interface UCOverrideAnswerPayload {
+  sessionId: string
+  teamId: string
+  questionId: string
+}
+
+export interface UCRemoveOverridePayload {
+  sessionId: string
+  teamId: string
+  questionId: string
+}
+
+export interface UCTeamSkipPayload {
+  sessionId: string
+  teamId: string
+}
+
+export interface UCEmitAudioPayload {
+  sessionId: string
+  teamId: string
+}
+
+export interface UCAudioPlayPayload {
+  teamId: string
+  teamName: string
+  teamColor: string
+  // Screen client constructs the full URL from its own API base + sessionId
 }
 
 // ─── Clue Reveal Payloads ──────────────────────────────────────────────────────

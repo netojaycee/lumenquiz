@@ -19,6 +19,7 @@ import { Input } from '@/components/ui/input'
 import { TimerBar, TimerCountdown } from '@/components/game/TimerBar'
 import { cn } from '@/lib/utils'
 import { storage } from '@/lib/storage'
+import { getBaseUrl } from '@/lib/api'
 import { soundManager } from '@/lib/sound'
 import { useSocketStore } from '@/stores/useSocketStore'
 import { useTeamStore } from '@/stores/useTeamStore'
@@ -29,7 +30,7 @@ import { ReconnectOverlay } from '@/components/shared/ReconnectOverlay'
 import { SessionStatus, QuestionType } from '@apoquiz/shared-types'
 import type { CumulativeScoresPayload } from '@apoquiz/socket-events'
 
-type ConnectPhase = 'checking' | 'connecting' | 'connected' | 'failed' | 'not_started'
+type ConnectPhase = 'checking' | 'connecting' | 'connected' | 'failed'
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
@@ -75,7 +76,10 @@ export function TeamClient(): React.ReactElement {
   const [ucTimeLeft, setUCTimeLeft] = useState(0)
   const [clueTimeLeft, setClueTimeLeft] = useState(0)
   const [answeringTimeLeft, setAnsweringTimeLeft] = useState(0)
+  const [isRecording, setIsRecording] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const audioChunksRef = useRef<Blob[]>([])
   const { isFullscreen, isSupported, enter: enterFullscreen } = useFullscreen()
 
   useEffect(() => {
@@ -193,21 +197,70 @@ export function TeamClient(): React.ReactElement {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (sessionStatus === SessionStatus.CLUE_OPEN && e.code === 'Space') {
-        if (
-          document.activeElement?.tagName !== 'INPUT' &&
-          document.activeElement?.tagName !== 'TEXTAREA'
-        ) {
-          e.preventDefault()
+      if (document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA') return
+      if (e.code === 'Space') {
+        e.preventDefault()
+        if (sessionStatus === SessionStatus.CLUE_OPEN) {
           if (!clueLockedOut && !clueState?.buzzingTeamId) {
             emit(TEAM_EVENTS.CLUE_BUZZ, { teamId, sessionId })
           }
+        } else if (sessionStatus === SessionStatus.UC_ACTIVE && ucState?.activeTeamId === teamId) {
+          emit(TEAM_EVENTS.UC_SKIP, { teamId, sessionId })
         }
       }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [sessionStatus, clueLockedOut, clueState?.buzzingTeamId, teamId, sessionId, emit])
+  }, [sessionStatus, clueLockedOut, clueState?.buzzingTeamId, ucState?.activeTeamId, teamId, sessionId, emit])
+
+  // ─── UC audio recording ───────────────────────────────────────────────────
+  // Start mic when this team's turn goes active; stop + upload when turn ends.
+
+  const isMyUCTurn = sessionStatus === SessionStatus.UC_ACTIVE && ucState?.activeTeamId === teamId
+
+  useEffect(() => {
+    if (!teamId) return
+
+    if (isMyUCTurn) {
+      // Start recording
+      navigator.mediaDevices
+        .getUserMedia({ audio: true })
+        .then((stream) => {
+          const mr = new MediaRecorder(stream)
+          audioChunksRef.current = []
+          mr.ondataavailable = (e) => {
+            if (e.data.size > 0) audioChunksRef.current.push(e.data)
+          }
+          mr.onstop = () => {
+            stream.getTracks().forEach((t) => t.stop())
+            const blob = new Blob(audioChunksRef.current, { type: mr.mimeType || 'audio/webm' })
+            const form = new FormData()
+            form.append('audio', blob, 'turn.webm')
+            // Upload — fire-and-forget; review panel shows audio once available
+            fetch(`${getBaseUrl()}/api/sessions/${sessionId}/uc-audio/${teamId}`, {
+              method: 'POST',
+              credentials: 'include',
+              body: form,
+            }).catch(() => undefined)
+            setIsRecording(false)
+          }
+          mr.start()
+          mediaRecorderRef.current = mr
+          setIsRecording(true)
+        })
+        .catch(() => {
+          // Mic permission denied or unavailable — recording silently skipped
+        })
+    } else {
+      // Turn ended — stop recorder if active
+      const mr = mediaRecorderRef.current
+      if (mr && mr.state !== 'inactive') {
+        mr.stop()
+        mediaRecorderRef.current = null
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isMyUCTurn])
 
   useEffect(() => {
     if (sessionStatus === SessionStatus.ROUND_INTRO && isSupported && !isFullscreen) {
@@ -233,10 +286,20 @@ export function TeamClient(): React.ReactElement {
       emit(CONNECTION_EVENTS.REJOIN, {
         role: 'team',
         teamCode: stored.joinCode,
+        deviceToken: stored.deviceToken,
       })
     }
 
-    const onJoined = (data: { teamId: string; name: string; color: string; sessionId: string }) => {
+    const onJoined = (data: { teamId: string; name: string; color: string; sessionId: string; deviceToken: string }) => {
+      // Persist the refreshed token so future reconnects carry the correct credential
+      storage.setTeam({
+        teamId: data.teamId,
+        sessionId: data.sessionId,
+        joinCode: stored.joinCode,
+        name: data.name,
+        color: data.color,
+        deviceToken: data.deviceToken,
+      })
       setIdentity({
         teamId: data.teamId,
         sessionId: data.sessionId,
@@ -252,14 +315,11 @@ export function TeamClient(): React.ReactElement {
 
     socket.on(JOIN_EVENTS.TEAM_JOINED, onJoined)
 
-    const onError = (data: { code?: string }) => {
-      // These codes all mean "quiz isn't live yet" — show the friendly waiting screen
-      const prelaunchCodes = ['SESSION_NOT_FOUND', 'SESSION_NOT_STARTED', 'NO_ACTIVE_SESSION', 'TEAM_NOT_IN_SESSION']
-      if (data?.code && prelaunchCodes.includes(data.code)) {
-        setPhase('not_started')
-      } else {
-        setPhase('failed')
-      }
+    const onError = (_data: { code?: string; message?: string }) => {
+      // Any error during the initial join attempt means the team cannot enter.
+      // Send them back to /join so the session is treated as if it doesn't exist.
+      storage.clearTeam()
+      router.replace('/join')
     }
     socket.on('error', onError)
 
@@ -388,21 +448,6 @@ export function TeamClient(): React.ReactElement {
     )
   }
 
-  if (phase === 'not_started') {
-    return (
-      <main className="min-h-screen bg-[#08080E] flex items-center justify-center p-6">
-        <div className="text-center">
-          <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-full bg-[#F59E0B]/10 border border-[#F59E0B]/20">
-            <Clock className="h-8 w-8 text-[#F59E0B]" />
-          </div>
-          <p className="text-xl font-black text-white mb-1">Quiz hasn&apos;t started yet</p>
-          <p className="text-white/40 text-sm mb-5">Wait for the host to launch the session</p>
-          <Button onClick={() => router.replace('/join')} variant="outline">Back to Join</Button>
-        </div>
-      </main>
-    )
-  }
-
   if (phase === 'failed') {
     return (
       <main className="min-h-screen bg-[#08080E] flex items-center justify-center p-6">
@@ -464,6 +509,8 @@ export function TeamClient(): React.ReactElement {
             </div>
             <button
               onClick={() => {
+                // Tell the server to clear the device token so this slot can be reclaimed
+                if (teamId) emit(TEAM_EVENTS.LOGOUT, { teamId, sessionId })
                 storage.clearTeam()
                 emit(CONNECTION_EVENTS.LEAVE, {})
                 router.push('/join')
@@ -1564,6 +1611,22 @@ export function TeamClient(): React.ReactElement {
                     </p>
                   </motion.div>
 
+                  {/* Recording indicator */}
+                  {isRecording && (
+                    <motion.div
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      className="flex items-center gap-2 rounded-full border border-red-500/30 bg-red-500/10 px-4 py-1.5"
+                    >
+                      <motion.div
+                        animate={{ opacity: [1, 0.3, 1] }}
+                        transition={{ repeat: Infinity, duration: 1.2 }}
+                        className="h-2 w-2 rounded-full bg-red-500"
+                      />
+                      <span className="text-xs font-bold uppercase tracking-widest text-red-400">Recording</span>
+                    </motion.div>
+                  )}
+
                   {/* Giant countdown */}
                   <motion.div
                     key={ucTimeLeft}
@@ -1585,6 +1648,17 @@ export function TeamClient(): React.ReactElement {
                       {ucState.teams.find((t) => t.teamId === teamId)?.score ?? 0}
                     </p>
                   </div>
+
+                  {/* Skip button — bold, full-width, keyboard-accessible (Space) */}
+                  <motion.button
+                    whileTap={{ scale: 0.96 }}
+                    onClick={() => emit(TEAM_EVENTS.UC_SKIP, { teamId, sessionId })}
+                    className="w-full rounded-2xl py-5 font-black text-xl tracking-wide text-white/70 border-2 border-white/15 bg-white/[0.04] active:bg-white/[0.08]"
+                    style={{ letterSpacing: '0.08em' }}
+                  >
+                    ⏭ SKIP
+                    <span className="block text-[10px] font-medium text-white/25 tracking-widest mt-0.5 uppercase">or press Space</span>
+                  </motion.button>
                 </div>
               ) : (
                 /* Another team is active */

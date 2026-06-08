@@ -29,7 +29,7 @@ import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
 import { storage } from '@/lib/storage'
-import { api } from '@/lib/api'
+import { api, getBaseUrl } from '@/lib/api'
 import { useSocketStore } from '@/stores/useSocketStore'
 import { ReconnectOverlay } from '@/components/shared/ReconnectOverlay'
 import { useScreenStore } from '@/stores/useScreenStore'
@@ -40,7 +40,7 @@ import {
   CONNECTION_EVENTS,
 } from '@apoquiz/socket-events'
 import { SessionStatus, UserRole, AudienceEngagementLevel } from '@apoquiz/shared-types'
-import type { CumulativeScoresPayload, UCStatePayload } from '@apoquiz/socket-events'
+import type { CumulativeScoresPayload, UCStatePayload, UCTurnReviewPayload } from '@apoquiz/socket-events'
 
 // Local shape matching CachedRound from the session cache
 interface RoundInfo {
@@ -195,6 +195,18 @@ export function ModeratorClient(): React.ReactElement {
   const [clueTimeLeft, setClueTimeLeft] = useState(0)
   const [answeringTimeLeft, setAnsweringTimeLeft] = useState(0)
   const [localUCState, setLocalUCState] = useState<UCStatePayload | null>(null)
+  const [ucTurnReviews, setUCTurnReviews] = useState<Map<string, UCTurnReviewPayload>>(new Map())
+  const [reviewPanelTeamId, setReviewPanelTeamId] = useState<string | null>(null)
+  const [projectorReviewTeamId, setProjectorReviewTeamId] = useState<string | null>(null)
+  const [lobbyReviewRoundId, setLobbyReviewRoundId] = useState<string | null>(null)
+  const [ucPendingAction, setUCPendingAction] = useState<{
+    action: 'award' | 'remove'
+    teamId: string
+    teamName: string
+    questionId: string
+    questionText: string
+    points: number
+  } | null>(null)
 
   // ─── Connection ───────────────────────────────────────────────────────────
 
@@ -245,6 +257,10 @@ export function ModeratorClient(): React.ReactElement {
       setPendingAnswer(data)
     })
 
+    socket.on(SERVER_EVENTS.UC_TURN_REVIEW, (data: UCTurnReviewPayload) => {
+      setUCTurnReviews((prev) => new Map(prev).set(data.teamId, data))
+    })
+
     const timeout = setTimeout(() => {
       setPhase((current) => (current === 'connected' ? 'connected' : 'failed'))
     }, 10000)
@@ -259,6 +275,7 @@ export function ModeratorClient(): React.ReactElement {
       socket.off('round:ready:summary', onReadySummary)
       // socket.off(SERVER_EVENTS.TILEBLITZ_BONUS_RESULT, onBonusResult)
       socket.off(SERVER_EVENTS.TILEBLITZ_PENDING_ANSWER)
+      socket.off(SERVER_EVENTS.UC_TURN_REVIEW)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId])
@@ -443,6 +460,41 @@ const toggleTimer = useCallback(() => {
     emit(MODERATOR_EVENTS.UC_END_TURN, { sessionId })
   }, [emit, sessionId])
 
+  const ucEmitReview = useCallback((teamId: string) => {
+    if (projectorReviewTeamId === teamId) {
+      emit(MODERATOR_EVENTS.UC_HIDE_REVIEW, { sessionId })
+      setProjectorReviewTeamId(null)
+    } else {
+      emit(MODERATOR_EVENTS.UC_EMIT_REVIEW, { sessionId, teamId })
+      setProjectorReviewTeamId(teamId)
+    }
+  }, [emit, sessionId, projectorReviewTeamId])
+
+  const ucOverrideAnswer = useCallback((teamId: string, questionId: string) => {
+    emit(MODERATOR_EVENTS.UC_OVERRIDE_ANSWER, { sessionId, teamId, questionId })
+  }, [emit, sessionId])
+
+  const ucRemoveOverride = useCallback((teamId: string, questionId: string) => {
+    emit(MODERATOR_EVENTS.UC_REMOVE_OVERRIDE, { sessionId, teamId, questionId })
+  }, [emit, sessionId])
+
+  const confirmUCAction = useCallback(() => {
+    if (!ucPendingAction) return
+    if (ucPendingAction.action === 'award') {
+      ucOverrideAnswer(ucPendingAction.teamId, ucPendingAction.questionId)
+    } else {
+      ucRemoveOverride(ucPendingAction.teamId, ucPendingAction.questionId)
+    }
+    setUCPendingAction(null)
+  }, [ucPendingAction, ucOverrideAnswer, ucRemoveOverride])
+
+  const ucEmitAudio = useCallback((teamId: string) => {
+    emit(MODERATOR_EVENTS.UC_EMIT_AUDIO, { sessionId, teamId })
+  }, [emit, sessionId])
+
+  const ucAudioUrl = (teamId: string) =>
+    `${getBaseUrl()}/api/sessions/${sessionId}/uc-audio/${teamId}`
+
   // ─── Loading states ───────────────────────────────────────────────────────
 
   if (phase === 'checking' || phase === 'connecting') {
@@ -601,40 +653,166 @@ const toggleTimer = useCallback(() => {
                     </p>
                     {rounds.map((r) => {
                       const isDone = completedRoundIds.includes(r.id)
+                      const isUCRound = r.gameMode === 'ultimate_challenge'
+                      const hasReview = isDone && isUCRound && ucTurnReviews.size > 0
+                      const reviewOpen = lobbyReviewRoundId === r.id
                       return (
-                        <div
-                          key={r.id}
-                          className={cn(
-                            'border-border flex items-center gap-3 rounded-xl border p-4',
-                            isDone ? 'bg-surface/40 opacity-60' : 'bg-surface',
-                          )}
-                        >
-                          <div className="flex-1">
-                            <div className="flex items-center gap-2">
-                              <p className="text-sm font-semibold text-white">
-                                {r.name ?? `Round ${r.order}`}
+                        <div key={r.id} className="space-y-0">
+                          <div
+                            className={cn(
+                              'border-border flex items-center gap-3 rounded-xl border p-4',
+                              isDone ? 'bg-surface/40' : 'bg-surface',
+                              reviewOpen && 'rounded-b-none border-b-0',
+                            )}
+                          >
+                            <div className="flex-1">
+                              <div className="flex items-center gap-2">
+                                <p className="text-sm font-semibold text-white">
+                                  {r.name ?? `Round ${r.order}`}
+                                </p>
+                                {isDone && (
+                                  <span className="bg-correct/20 text-correct rounded-full px-2 py-0.5 text-xs font-medium">
+                                    Done
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-text-muted mt-0.5 text-xs">
+                                {r.questionCount} questions · {r.timerSeconds}s each · {r.gameMode}
                               </p>
-                              {isDone && (
-                                <span className="bg-correct/20 text-correct rounded-full px-2 py-0.5 text-xs font-medium">
-                                  Done
-                                </span>
-                              )}
                             </div>
-                            <p className="text-text-muted mt-0.5 text-xs">
-                              {r.questionCount} questions · {r.timerSeconds}s each · {r.gameMode}
-                            </p>
+                            {isDone && hasReview && (
+                              <button
+                                onClick={() => setLobbyReviewRoundId(reviewOpen ? null : r.id)}
+                                className={cn(
+                                  'rounded-lg px-2.5 py-1.5 text-xs font-bold uppercase tracking-wider transition-colors',
+                                  reviewOpen
+                                    ? 'bg-blitz-accent/20 text-blitz-accent'
+                                    : 'bg-white/5 text-white/40 hover:bg-white/10 hover:text-white/70',
+                                )}
+                              >
+                                {reviewOpen ? 'Hide Review' : 'Review'}
+                              </button>
+                            )}
+                            {!isDone && (
+                              <div className="flex items-center gap-2">
+                                <Button size="sm" variant="outline" onClick={() => openVote(r.id)}>
+                                  Open Vote
+                                </Button>
+                                <Button size="sm" onClick={() => startRound(r.id)}>
+                                  <Play className="mr-1 h-3.5 w-3.5" />
+                                  Start
+                                </Button>
+                              </div>
+                            )}
                           </div>
-                          {!isDone && (
-                            <div className="flex items-center gap-2">
-                              <Button size="sm" variant="outline" onClick={() => openVote(r.id)}>
-                                Open Vote
-                              </Button>
-                              <Button size="sm" onClick={() => startRound(r.id)}>
-                                <Play className="mr-1 h-3.5 w-3.5" />
-                                Start
-                              </Button>
-                            </div>
-                          )}
+
+                          {/* UC turn reviews expanded panel */}
+                          <AnimatePresence>
+                            {reviewOpen && (
+                              <motion.div
+                                initial={{ opacity: 0, height: 0 }}
+                                animate={{ opacity: 1, height: 'auto' }}
+                                exit={{ opacity: 0, height: 0 }}
+                                className="overflow-hidden"
+                              >
+                                <div className="border-border bg-surface/30 rounded-b-xl border border-t-0 p-3 space-y-2">
+                                  {Array.from(ucTurnReviews.values()).map((rev) => (
+                                    <div key={rev.teamId} className="border-border bg-surface rounded-xl border overflow-hidden">
+                                      <button
+                                        onClick={() => setReviewPanelTeamId(reviewPanelTeamId === rev.teamId ? null : rev.teamId)}
+                                        className="flex w-full items-center gap-2 px-3 py-2.5 text-left hover:bg-white/[0.03]"
+                                      >
+                                        <div className="h-2.5 w-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: rev.teamColor }} />
+                                        <span className="flex-1 text-sm font-semibold text-white">{rev.teamName}</span>
+                                        <span className="text-correct text-xs">{rev.totalCorrect}/{rev.questions.length}</span>
+                                        <span className="text-text-muted text-xs ml-1">· {rev.totalPoints} pts</span>
+                                        <ChevronRight className={cn('h-4 w-4 text-text-muted transition-transform ml-1', reviewPanelTeamId === rev.teamId && 'rotate-90')} />
+                                      </button>
+                                      <AnimatePresence>
+                                        {reviewPanelTeamId === rev.teamId && (
+                                          <motion.div
+                                            initial={{ height: 0 }}
+                                            animate={{ height: 'auto' }}
+                                            exit={{ height: 0 }}
+                                            className="overflow-hidden border-t border-white/5"
+                                          >
+                                            <div className="p-3 space-y-1.5">
+                                              <div className="flex justify-end mb-2">
+                                                <button
+                                                  onClick={() => ucEmitReview(rev.teamId)}
+                                                  className={cn(
+                                                    'rounded-lg px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider transition-colors',
+                                                    projectorReviewTeamId === rev.teamId
+                                                      ? 'bg-wrong/20 text-wrong hover:bg-wrong/30'
+                                                      : 'bg-blitz-accent/15 text-blitz-accent hover:bg-blitz-accent/25',
+                                                  )}
+                                                >
+                                                  {projectorReviewTeamId === rev.teamId ? '✕ Close Projector' : '▶ Show on Projector'}
+                                                </button>
+                                              </div>
+                                              {rev.questions.map((q, i) => {
+                                                const ptsPerQ = rev.questions.find((x) => x.wasAnswered)?.pointsEarned ?? 0
+                                                return (
+                                                  <div
+                                                    key={q.questionId}
+                                                    className={cn(
+                                                      'flex items-start gap-2.5 rounded-lg px-3 py-2',
+                                                      q.wasAnswered ? 'bg-correct/8 border border-correct/20' : 'bg-white/[0.025] border border-white/6',
+                                                    )}
+                                                  >
+                                                    <span className="text-text-muted mt-0.5 w-4 flex-shrink-0 text-xs font-mono">Q{i + 1}</span>
+                                                    <div className="flex-1 min-w-0">
+                                                      <p className="text-xs text-white/80 leading-snug">{q.questionText}</p>
+                                                      <p className="text-[10px] text-text-muted mt-0.5">Answer: {q.correctAnswer}</p>
+                                                    </div>
+                                                    {q.wasAnswered ? (
+                                                      <div className="flex-shrink-0 flex items-center gap-1.5">
+                                                        <div className="text-right">
+                                                          <span className="text-correct text-xs font-bold">✓</span>
+                                                          <p className="text-correct text-[10px]">+{q.pointsEarned}</p>
+                                                        </div>
+                                                        <button
+                                                          onClick={() => setUCPendingAction({ action: 'remove', teamId: rev.teamId, teamName: rev.teamName, questionId: q.questionId, questionText: q.questionText, points: q.pointsEarned })}
+                                                          className="rounded px-1.5 py-1 text-[9px] font-bold uppercase tracking-wider bg-red-500/8 text-red-400/70 hover:bg-red-500/15 hover:text-red-400 transition-colors border border-red-500/15"
+                                                          title="Remove these points"
+                                                        >−</button>
+                                                      </div>
+                                                    ) : (
+                                                      <button
+                                                        onClick={() => setUCPendingAction({ action: 'award', teamId: rev.teamId, teamName: rev.teamName, questionId: q.questionId, questionText: q.questionText, points: ptsPerQ })}
+                                                        className="flex-shrink-0 rounded px-2 py-1 text-[10px] font-bold uppercase tracking-wider bg-timer-warning/10 text-timer-warning hover:bg-timer-warning/20 transition-colors"
+                                                      >Award</button>
+                                                    )}
+                                                  </div>
+                                                )
+                                              })}
+                                              {/* Audio */}
+                                              <div className="mt-2 border-t border-white/5 pt-2">
+                                                <p className="text-text-muted mb-1 text-[10px] font-bold uppercase tracking-wider">Turn Recording</p>
+                                                <audio
+                                                  controls
+                                                  src={ucAudioUrl(rev.teamId)}
+                                                  className="h-8 w-full"
+                                                  onError={(e) => { (e.target as HTMLAudioElement).style.display = 'none'; (e.target as HTMLAudioElement).nextElementSibling?.classList.remove('hidden') }}
+                                                />
+                                                <p className="hidden text-[10px] text-white/25 italic">No recording available</p>
+                                                <button
+                                                  onClick={() => ucEmitAudio(rev.teamId)}
+                                                  className="mt-1.5 w-full rounded-lg bg-white/[0.04] border border-white/8 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-white/50 hover:bg-white/[0.08] hover:text-white/70 transition-colors"
+                                                >
+                                                  🔊 Play Audio on Projector
+                                                </button>
+                                              </div>
+                                            </div>
+                                          </motion.div>
+                                        )}
+                                      </AnimatePresence>
+                                    </div>
+                                  ))}
+                                </div>
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
                         </div>
                       )
                     })}
@@ -1315,7 +1493,7 @@ const toggleTimer = useCallback(() => {
                   Choose which team goes next. Timer starts on selection.
                 </p>
 
-                {/* 🏁 DONE TEAMS */}
+                {/* 🏁 DONE TEAMS with review access */}
                 {localUCState.teams?.filter((t) => t.isCompleted).length > 0 && (
                   <div className="mb-4">
                     <p className="text-text-muted mb-2 text-xs tracking-wider uppercase">Done</p>
@@ -1325,18 +1503,131 @@ const toggleTimer = useCallback(() => {
                       .map((t) => (
                         <div
                           key={t.teamId}
-                          className="border-border bg-surface/40 mb-1.5 flex items-center gap-2 rounded-lg border px-3 py-2 opacity-60"
+                          className="border-border bg-surface/40 mb-1.5 flex items-center gap-2 rounded-lg border px-3 py-2"
                         >
                           <div
-                            className="h-2.5 w-2.5 rounded-full"
+                            className="h-2.5 w-2.5 rounded-full flex-shrink-0"
                             style={{ backgroundColor: t.teamColor }}
                           />
                           <span className="flex-1 text-sm text-white">{t.teamName}</span>
-                          <span className="text-correct text-xs">{t.score} pts</span>
+                          <span className="text-correct text-xs mr-2">{t.score} pts</span>
+                          {ucTurnReviews.has(t.teamId) && (
+                            <button
+                              onClick={() => setReviewPanelTeamId(reviewPanelTeamId === t.teamId ? null : t.teamId)}
+                              className={cn(
+                                'rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider transition-colors',
+                                reviewPanelTeamId === t.teamId
+                                  ? 'bg-blitz-accent/20 text-blitz-accent'
+                                  : 'bg-white/5 text-white/40 hover:bg-white/10 hover:text-white/70',
+                              )}
+                            >
+                              Review
+                            </button>
+                          )}
                         </div>
                       ))}
                   </div>
                 )}
+
+                {/* Review panel for selected team */}
+                <AnimatePresence>
+                  {reviewPanelTeamId && ucTurnReviews.get(reviewPanelTeamId) && (
+                    <motion.div
+                      key={`review-${reviewPanelTeamId}`}
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: 'auto' }}
+                      exit={{ opacity: 0, height: 0 }}
+                      className="mb-4 overflow-hidden"
+                    >
+                      {(() => {
+                        const rev = ucTurnReviews.get(reviewPanelTeamId)!
+                        return (
+                          <div className="border-border bg-surface rounded-xl border p-4">
+                            <div className="mb-3 flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                <div className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: rev.teamColor }} />
+                                <span className="text-sm font-bold text-white">{rev.teamName}</span>
+                                <span className="text-text-muted text-xs">{rev.totalCorrect}/{rev.questions.length} correct · {rev.totalPoints} pts</span>
+                              </div>
+                              <button
+                                onClick={() => ucEmitReview(reviewPanelTeamId)}
+                                className={cn(
+                                  'rounded-lg px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider transition-colors',
+                                  projectorReviewTeamId === reviewPanelTeamId
+                                    ? 'bg-wrong/20 text-wrong hover:bg-wrong/30'
+                                    : 'bg-blitz-accent/15 text-blitz-accent hover:bg-blitz-accent/25',
+                                )}
+                              >
+                                {projectorReviewTeamId === reviewPanelTeamId ? '✕ Close Projector' : '▶ Show on Projector'}
+                              </button>
+                            </div>
+                            <div className="space-y-1.5">
+                              {rev.questions.map((q, i) => {
+                                const ptsPerQ = rev.questions.find((x) => x.wasAnswered)?.pointsEarned ?? 0
+                                return (
+                                  <div
+                                    key={q.questionId}
+                                    className={cn(
+                                      'flex items-start gap-2.5 rounded-lg px-3 py-2.5',
+                                      q.wasAnswered ? 'bg-correct/8 border border-correct/20' : 'bg-white/[0.025] border border-white/6',
+                                    )}
+                                  >
+                                    <span className="text-text-muted mt-0.5 w-4 flex-shrink-0 text-xs font-mono">Q{i + 1}</span>
+                                    <div className="flex-1 min-w-0">
+                                      <p className="text-xs text-white/80 leading-snug truncate">{q.questionText}</p>
+                                      <p className="text-[10px] text-text-muted mt-0.5">Answer: {q.correctAnswer}</p>
+                                    </div>
+                                    {q.wasAnswered ? (
+                                      <div className="flex-shrink-0 flex items-center gap-1.5">
+                                        <div className="text-right">
+                                          <span className="text-correct text-xs font-bold">✓</span>
+                                          <p className="text-correct text-[10px]">+{q.pointsEarned}</p>
+                                        </div>
+                                        <button
+                                          onClick={() => setUCPendingAction({ action: 'remove', teamId: reviewPanelTeamId, teamName: rev.teamName, questionId: q.questionId, questionText: q.questionText, points: q.pointsEarned })}
+                                          className="rounded px-1.5 py-1 text-[9px] font-bold uppercase tracking-wider bg-red-500/8 text-red-400/70 hover:bg-red-500/15 hover:text-red-400 transition-colors border border-red-500/15"
+                                          title="Remove these points"
+                                        >
+                                          −
+                                        </button>
+                                      </div>
+                                    ) : (
+                                      <button
+                                        onClick={() => setUCPendingAction({ action: 'award', teamId: reviewPanelTeamId, teamName: rev.teamName, questionId: q.questionId, questionText: q.questionText, points: ptsPerQ })}
+                                        className="flex-shrink-0 rounded px-2 py-1 text-[10px] font-bold uppercase tracking-wider bg-timer-warning/10 text-timer-warning hover:bg-timer-warning/20 transition-colors"
+                                        title="Award points for this question"
+                                      >
+                                        Award
+                                      </button>
+                                    )}
+                                  </div>
+                                )
+                              })}
+                            </div>
+
+                            {/* Audio recording playback */}
+                            <div className="mt-3 border-t border-white/5 pt-3">
+                              <p className="text-text-muted mb-1.5 text-[10px] font-bold uppercase tracking-wider">Turn Recording</p>
+                              <audio
+                                controls
+                                src={ucAudioUrl(reviewPanelTeamId)}
+                                className="h-8 w-full"
+                                onError={(e) => { (e.target as HTMLAudioElement).style.display = 'none'; (e.target as HTMLAudioElement).nextElementSibling?.classList.remove('hidden') }}
+                              />
+                              <p className="hidden text-[10px] text-white/25 italic">No recording available for this team</p>
+                              <button
+                                onClick={() => ucEmitAudio(reviewPanelTeamId)}
+                                className="mt-1.5 w-full rounded-lg bg-white/[0.04] border border-white/8 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-white/50 hover:bg-white/[0.08] hover:text-white/70 transition-colors"
+                              >
+                                🔊 Play Audio on Projector
+                              </button>
+                            </div>
+                          </div>
+                        )
+                      })()}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
 
                 {/* ⏳ WAITING TEAMS */}
                 <p className="text-text-muted mb-2 text-xs tracking-wider uppercase">Waiting</p>
@@ -1497,12 +1788,118 @@ const toggleTimer = useCallback(() => {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0 }}
               >
-                <div className="bg-surface border-border mb-6 rounded-xl border p-6 text-center">
+                <div className="bg-surface border-border mb-4 rounded-xl border p-6 text-center">
                   <p className="mb-1 text-lg font-bold text-white">Round complete!</p>
                   <p className="text-text-muted text-sm">
                     All questions answered. Ready for summary.
                   </p>
                 </div>
+
+                {/* Turn reviews for all UC teams */}
+                {ucTurnReviews.size > 0 && (
+                  <div className="mb-4">
+                    <p className="text-text-muted mb-2 text-xs font-bold uppercase tracking-wider">Turn Reviews</p>
+                    {Array.from(ucTurnReviews.values()).map((rev) => (
+                      <div key={rev.teamId} className="border-border bg-surface mb-2 rounded-xl border overflow-hidden">
+                        <button
+                          onClick={() => setReviewPanelTeamId(reviewPanelTeamId === rev.teamId ? null : rev.teamId)}
+                          className="flex w-full items-center gap-2 px-3 py-2.5 text-left hover:bg-white/[0.03]"
+                        >
+                          <div className="h-2.5 w-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: rev.teamColor }} />
+                          <span className="flex-1 text-sm font-semibold text-white">{rev.teamName}</span>
+                          <span className="text-correct text-xs">{rev.totalCorrect}/{rev.questions.length}</span>
+                          <span className="text-text-muted text-xs ml-1">· {rev.totalPoints} pts</span>
+                          <ChevronRight className={cn('h-4 w-4 text-text-muted transition-transform ml-1', reviewPanelTeamId === rev.teamId && 'rotate-90')} />
+                        </button>
+                        <AnimatePresence>
+                          {reviewPanelTeamId === rev.teamId && (
+                            <motion.div
+                              initial={{ height: 0 }}
+                              animate={{ height: 'auto' }}
+                              exit={{ height: 0 }}
+                              className="overflow-hidden border-t border-white/5"
+                            >
+                              <div className="p-3 space-y-1.5">
+                                <div className="flex justify-end mb-2">
+                                  <button
+                                    onClick={() => ucEmitReview(rev.teamId)}
+                                    className={cn(
+                                      'rounded-lg px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider transition-colors',
+                                      projectorReviewTeamId === rev.teamId
+                                        ? 'bg-wrong/20 text-wrong hover:bg-wrong/30'
+                                        : 'bg-blitz-accent/15 text-blitz-accent hover:bg-blitz-accent/25',
+                                    )}
+                                  >
+                                    {projectorReviewTeamId === rev.teamId ? '✕ Close Projector' : '▶ Show on Projector'}
+                                  </button>
+                                </div>
+                                {rev.questions.map((q, i) => {
+                                  const ptsPerQ = rev.questions.find((x) => x.wasAnswered)?.pointsEarned ?? 0
+                                  return (
+                                    <div
+                                      key={q.questionId}
+                                      className={cn(
+                                        'flex items-start gap-2.5 rounded-lg px-3 py-2',
+                                        q.wasAnswered ? 'bg-correct/8 border border-correct/20' : 'bg-white/[0.025] border border-white/6',
+                                      )}
+                                    >
+                                      <span className="text-text-muted mt-0.5 w-4 flex-shrink-0 text-xs font-mono">Q{i + 1}</span>
+                                      <div className="flex-1 min-w-0">
+                                        <p className="text-xs text-white/80 leading-snug">{q.questionText}</p>
+                                        <p className="text-[10px] text-text-muted mt-0.5">Answer: {q.correctAnswer}</p>
+                                      </div>
+                                      {q.wasAnswered ? (
+                                        <div className="flex-shrink-0 flex items-center gap-1.5">
+                                          <div className="text-right">
+                                            <span className="text-correct text-xs font-bold">✓</span>
+                                            <p className="text-correct text-[10px]">+{q.pointsEarned}</p>
+                                          </div>
+                                          <button
+                                            onClick={() => setUCPendingAction({ action: 'remove', teamId: rev.teamId, teamName: rev.teamName, questionId: q.questionId, questionText: q.questionText, points: q.pointsEarned })}
+                                            className="rounded px-1.5 py-1 text-[9px] font-bold uppercase tracking-wider bg-red-500/8 text-red-400/70 hover:bg-red-500/15 hover:text-red-400 transition-colors border border-red-500/15"
+                                            title="Remove these points"
+                                          >
+                                            −
+                                          </button>
+                                        </div>
+                                      ) : (
+                                        <button
+                                          onClick={() => setUCPendingAction({ action: 'award', teamId: rev.teamId, teamName: rev.teamName, questionId: q.questionId, questionText: q.questionText, points: ptsPerQ })}
+                                          className="flex-shrink-0 rounded px-2 py-1 text-[10px] font-bold uppercase tracking-wider bg-timer-warning/10 text-timer-warning hover:bg-timer-warning/20 transition-colors"
+                                        >
+                                          Award
+                                        </button>
+                                      )}
+                                    </div>
+                                  )
+                                })}
+
+                                {/* Audio recording */}
+                                <div className="mt-2 border-t border-white/5 pt-2">
+                                  <p className="text-text-muted mb-1 text-[10px] font-bold uppercase tracking-wider">Turn Recording</p>
+                                  <audio
+                                    controls
+                                    src={ucAudioUrl(rev.teamId)}
+                                    className="h-8 w-full"
+                                    onError={(e) => { (e.target as HTMLAudioElement).style.display = 'none'; (e.target as HTMLAudioElement).nextElementSibling?.classList.remove('hidden') }}
+                                  />
+                                  <p className="hidden text-[10px] text-white/25 italic">No recording available</p>
+                                  <button
+                                    onClick={() => ucEmitAudio(rev.teamId)}
+                                    className="mt-1.5 w-full rounded-lg bg-white/[0.04] border border-white/8 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-white/50 hover:bg-white/[0.08] hover:text-white/70 transition-colors"
+                                  >
+                                    🔊 Play Audio on Projector
+                                  </button>
+                                </div>
+                              </div>
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
                 <Button size="lg" onClick={showRoundSummary} className="w-full">
                   <Trophy className="mr-2 h-5 w-5" />
                   Show Round Summary
@@ -1834,6 +2231,63 @@ const toggleTimer = useCallback(() => {
           </div>
         </aside>
       </div>
+
+      {/* UC Award / Remove confirmation dialog */}
+      <AnimatePresence>
+        {ucPendingAction && (
+          <motion.div
+            key="uc-confirm"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+            onClick={() => setUCPendingAction(null)}
+          >
+            <motion.div
+              initial={{ scale: 0.9, y: 16 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.9, y: 16 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-surface border-border mx-4 w-full max-w-sm rounded-2xl border p-6 shadow-2xl"
+            >
+              <p className={cn(
+                'mb-1 text-xs font-bold uppercase tracking-widest',
+                ucPendingAction.action === 'award' ? 'text-timer-warning' : 'text-red-400',
+              )}>
+                {ucPendingAction.action === 'award' ? 'Confirm Award' : 'Confirm Remove'}
+              </p>
+              <p className="mb-4 text-white font-semibold leading-snug">
+                {ucPendingAction.action === 'award'
+                  ? <>Award {ucPendingAction.points > 0 ? <span className="text-timer-warning">+{ucPendingAction.points} pts</span> : 'points'} to <span className="text-white font-black">{ucPendingAction.teamName}</span>?</>
+                  : <>Remove <span className="text-red-400 font-black">−{ucPendingAction.points} pts</span> from <span className="text-white font-black">{ucPendingAction.teamName}</span>?</>
+                }
+              </p>
+              <p className="text-text-muted mb-6 text-xs leading-relaxed truncate">
+                Question: {ucPendingAction.questionText}
+              </p>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setUCPendingAction(null)}
+                  className="flex-1 rounded-xl border border-white/10 py-2.5 text-sm font-semibold text-white/50 hover:text-white/80 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={confirmUCAction}
+                  className={cn(
+                    'flex-1 rounded-xl py-2.5 text-sm font-black transition-colors',
+                    ucPendingAction.action === 'award'
+                      ? 'bg-timer-warning/20 text-timer-warning hover:bg-timer-warning/30'
+                      : 'bg-red-500/15 text-red-400 hover:bg-red-500/25',
+                  )}
+                >
+                  {ucPendingAction.action === 'award' ? 'Yes, Award' : 'Yes, Remove'}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Audience list popup */}
       <Dialog

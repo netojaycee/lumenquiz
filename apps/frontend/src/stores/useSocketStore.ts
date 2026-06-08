@@ -21,6 +21,8 @@ import type {
   UCStatePayload,
   UCQuestionUpdatePayload,
   UCTeamDonePayload,
+  UCTurnReviewPayload,
+  UCAudioPlayPayload,
   ClueStatePayload,
   ClueNextPayload,
   ClueAnswerResultPayload,
@@ -258,6 +260,28 @@ export const useSocketStore = create<SocketStore>((set, get) => ({
     socket.on(SERVER_EVENTS.UC_TEAM_DONE, (data: UCTeamDonePayload) => {
       ss()?.applyUCTeamDone(data)
       ts()?.applyUCTeamDone?.(data)
+    })
+
+    socket.on(SERVER_EVENTS.UC_TURN_REVIEW, (_data: UCTurnReviewPayload) => {
+      // Moderator accumulates reviews via their own local listener in moderator-client.tsx.
+      // Screen overlay is NOT triggered here — only UC_REVIEW_SHOW does that.
+    })
+
+    socket.on(SERVER_EVENTS.UC_REVIEW_SHOW, (data: UCTurnReviewPayload) => {
+      ss()?.setUCReviewOverlay(data)
+    })
+
+    socket.on(SERVER_EVENTS.UC_REVIEW_HIDE, () => {
+      ss()?.clearUCReviewOverlay()
+    })
+
+    socket.on(SERVER_EVENTS.UC_AUDIO_PLAY, (data: UCAudioPlayPayload & { sessionId: string }) => {
+      ss()?.setUCAudioPlay({
+        teamId: data.teamId,
+        teamName: data.teamName,
+        teamColor: data.teamColor,
+        sessionId: data.sessionId,
+      })
     })
 
     // Clue Reveal specific events

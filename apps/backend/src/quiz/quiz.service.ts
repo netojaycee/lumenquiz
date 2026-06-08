@@ -201,6 +201,13 @@ export class QuizService {
   async regenerateJoinCode(quizId: string, teamId: string) {
     await this.assertTeamBelongsToQuiz(quizId, teamId)
     const joinCode = await this.generateUniqueJoinCode()
+
+    // Clear any bound device token so the team can re-join with the new code on any device
+    await this.prisma.sessionTeam.updateMany({
+      where: { teamId },
+      data: { deviceToken: null },
+    })
+
     return this.prisma.team.update({
       where: { id: teamId },
       data: { joinCode },

@@ -19,6 +19,7 @@ import type {
   UCStatePayload,
   UCQuestionUpdatePayload,
   UCTeamDonePayload,
+  UCTurnReviewPayload,
   ClueStatePayload,
   ClueNextPayload,
   ClueAnswerResultPayload,
@@ -125,6 +126,12 @@ interface ScreenStore {
   hideQROverlay: () => void
   showRulesOverlay: (data: { roundName?: string | null; rules: string[] }) => void
   hideRulesOverlay: () => void
+  ucReviewOverlay: UCTurnReviewPayload | null
+  setUCReviewOverlay: (data: UCTurnReviewPayload) => void
+  clearUCReviewOverlay: () => void
+  ucAudioPlay: { teamId: string; teamName: string; teamColor: string; sessionId: string } | null
+  setUCAudioPlay: (data: { teamId: string; teamName: string; teamColor: string; sessionId: string }) => void
+  clearUCAudioPlay: () => void
   reset: () => void
 }
 
@@ -164,6 +171,8 @@ export const useScreenStore = create<ScreenStore>((set) => ({
   qrOverlay: null,
   rulesOverlay: null,
   activeInteraction: null,
+  ucReviewOverlay: null,
+  ucAudioPlay: null,
 
   setSessionId: (id) => set({ sessionId: id }),
 
@@ -306,9 +315,10 @@ export const useScreenStore = create<ScreenStore>((set) => ({
 
   setUCState: (data) => set((s) => ({
     ucState: data,
-    // sessionStatus: data.activeTeamId ? SessionStatus.UC_ACTIVE : SessionStatus.UC_TEAM_SELECT,
     sessionStatus: data.status,
     scores: data.scores ?? s.scores,
+    // Dismiss the review overlay when a new team goes active
+    ucReviewOverlay: data.status === SessionStatus.UC_ACTIVE ? null : s.ucReviewOverlay,
   })),
 
   applyUCQuestionUpdate: (data) => set((s) => ({
@@ -393,6 +403,11 @@ export const useScreenStore = create<ScreenStore>((set) => ({
 
   showRulesOverlay: (data) => set({ rulesOverlay: data }),
   hideRulesOverlay: () => set({ rulesOverlay: null }),
+
+  setUCReviewOverlay: (data) => set({ ucReviewOverlay: data }),
+  clearUCReviewOverlay: () => set({ ucReviewOverlay: null }),
+  setUCAudioPlay: (data) => set({ ucAudioPlay: data }),
+  clearUCAudioPlay: () => set({ ucAudioPlay: null }),
 
   reset: () => set({
     sessionStatus: null, currentRound: null, roundRules: null, currentQuestion: null,

@@ -4,14 +4,11 @@ import { useRouter } from 'next/navigation'
 import { useQuizId } from '@/hooks/useQuizId'
 import { AlertTriangle, CheckCircle2, BookOpen, Users, Clock, Award, Copy, Check, QrCode, Cloud, Wifi, Loader2, XCircle } from 'lucide-react'
 import { useHostStore } from '@/stores/useHostStore'
+import { useQuizValidation } from '@/hooks/useQuizValidation'
 import { Button } from '@/components/ui/button'
 import { getBaseUrl } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { QuizStatus } from '@apoquiz/shared-types'
-
-interface Warning {
-  message: string
-}
 
 function CodeBox({ label, code, description }: { label: string; code: string | null | undefined; description: string }) {
   const [copied, setCopied] = useState(false)
@@ -60,12 +57,14 @@ export function OverviewClient(): React.ReactElement {
 
   const quiz = currentQuiz?.id === quizId ? currentQuiz : null
 
+  const { warnings, canLaunch } = useQuizValidation(quiz)
+
   if (!quiz) {
     return <div className="text-text-muted text-sm">Loading quiz overview...</div>
   }
 
   const rounds = quiz.rounds ?? []
-  const teams = quiz.teams ?? []
+  const teams = (quiz.teams ?? []).filter((t) => !t.deletedAt)
   const questions = rounds.flatMap((r) => r.questions ?? [])
   const totalTime = rounds.reduce(
     (acc, r) => acc + r.timerSeconds * (r.questions?.length ?? r.questionCount),
@@ -74,37 +73,6 @@ export function OverviewClient(): React.ReactElement {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const session = (quiz as any).sessions?.[0] as { id: string; sessionCode: string | null; status: string } | undefined
-
-  const warnings: Warning[] = []
-  if (teams.length === 0) warnings.push({ message: 'No teams added yet' })
-  if (rounds.length === 0) warnings.push({ message: 'No rounds added yet' })
-  rounds.forEach((r) => {
-    const actual = r.questions?.length ?? 0
-    const needed = r.questionCount
-    const roundName = r.name ?? `Round ${r.order}`
-    if (actual === 0) {
-      warnings.push({ message: `Round "${roundName}" has no questions` })
-      return
-    }
-    const isTeamPerQuestion = r.gameMode === 'tile_blitz' || r.gameMode === 'ultimate_challenge'
-    if (isTeamPerQuestion) {
-      const required = teams.length * needed
-      if (actual < required) {
-        warnings.push({
-          message: `"${roundName}" (${r.gameMode.replace('_', ' ')}) needs ${required} questions (${teams.length} teams × ${needed}) — only ${actual} added`,
-        })
-      }
-    } else {
-      // blitz / clue_reveal: questionCount questions required
-      if (actual < needed) {
-        warnings.push({
-          message: `"${roundName}" needs ${needed} questions — only ${actual} added`,
-        })
-      }
-    }
-  })
-
-  const canLaunch = warnings.length === 0
 
   async function handleSyncToCloud() {
     setSyncing(true)
@@ -259,7 +227,7 @@ export function OverviewClient(): React.ReactElement {
               {warnings.map((w, i) => (
                 <li key={i} className="text-wrong/80 flex items-center gap-2 text-sm">
                   <span className="bg-wrong/60 h-1.5 w-1.5 flex-shrink-0 rounded-full" />
-                  {w.message}
+                  {w}
                 </li>
               ))}
             </ul>
