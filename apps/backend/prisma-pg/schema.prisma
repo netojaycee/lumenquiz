@@ -128,6 +128,7 @@ model SessionTeam {
   rank        Int?
   connected   Boolean @default(false)
   socketId    String?
+  deviceToken String? // bound to the first device that claims this slot; null = unclaimed
 
   session Session @relation(fields: [sessionId], references: [id])
   team    Team    @relation(fields: [teamId], references: [id])

@@ -12,6 +12,7 @@ import { DevModule } from './dev/dev.module'
 import { UploadsModule } from './uploads/uploads.module'
 import { AiModule } from './ai/ai.module'
 import { SyncModule } from './sync/sync.module'
+import { HealthController } from './health/health.controller'
 
 @Module({
   imports: [
@@ -30,5 +31,6 @@ import { SyncModule } from './sync/sync.module'
     AiModule,
     SyncModule,
   ],
+  controllers: [HealthController],
 })
 export class AppModule {}
