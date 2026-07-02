@@ -39,7 +39,7 @@ ENV APP_MODE=cloud
 ENV PORT=3000
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends openssl \
+  && apt-get install -y --no-install-recommends openssl curl wget \
   && rm -rf /var/lib/apt/lists/* \
   && corepack enable \
   && corepack prepare pnpm@9.15.9 --activate \
