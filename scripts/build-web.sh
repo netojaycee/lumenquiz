@@ -27,7 +27,10 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 echo "==> Installing dependencies"
-pnpm install --frozen-lockfile
+# --prod=false forces devDependencies (tsc, next, nest) to install even when
+# NODE_ENV=production is set in the environment (e.g. by Coolify at build time).
+# They are required to compile the app; the runtime image installs prod-only.
+pnpm install --frozen-lockfile --prod=false
 
 echo "==> Building shared packages"
 pnpm --filter=@apoquiz/shared-types build
