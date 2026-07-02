@@ -19,6 +19,22 @@ export interface TileState {
   activeTeamId: string | null
 }
 
+export interface UCTurnReview {
+  teamId: string
+  teamName: string
+  teamColor: string
+  questions: Array<{
+    questionId: string
+    questionText: string
+    correctAnswer: string
+    wasAnswered: boolean
+    pointsEarned: number
+  }>
+  totalCorrect: number
+  totalPoints: number
+  completedAt: number
+}
+
 export interface UltimateChallengeState {
   // Moderator-selected active team (null when waiting for selection)
   activeTeamId: string | null
@@ -39,6 +55,11 @@ export interface UltimateChallengeState {
   // ⏱ Timer for the currently active team
   timerDeadline: number
   timerHandle: ReturnType<typeof setTimeout> | null
+
+  // 📝 Review tracking — populated each turn
+  originalQueues: Map<string, Question[]>   // snapshot of queue at turn start
+  turnCorrectIds: Map<string, string[]>     // questionIds answered correctly per team
+  turnReviews: Map<string, UCTurnReview>    // completed turn reviews per team
 }
 
 export interface TileBlitzState {
@@ -140,6 +161,7 @@ export interface SessionCache {
 
   // Audience activity
   audienceVoteTally: Record<string, number> // teamId → vote count (ranked #1)
+  audienceVotePositionTally: Record<string, Record<number, number>> // teamId → {position → count}
   audienceEmojiCount: Record<string, number> // emoji → total count
 
   audienceLevel: AudienceEngagementLevel
@@ -153,6 +175,15 @@ export interface SessionCache {
 
   // Clue Reveal specific state (only populated when gameMode === 'clue_reveal')
   clueReveal?: ClueRevealState
+
+  // Sudden Victory tiebreaker state
+  suddenVictory?: SuddenVictoryState
+}
+
+export interface SuddenVictoryState {
+  tiedTeamIds: string[]
+  question: import('@apoquiz/shared-types').Question
+  timerHandle: ReturnType<typeof setTimeout> | null
 }
 
 // Module-scoped singleton — all gateway methods share this Map

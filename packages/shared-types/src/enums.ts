@@ -56,6 +56,8 @@ export enum SessionStatus {
   // Clue Reveal specific states
   CLUE_OPEN = 'clue_open',
   CLUE_ANSWERING = 'clue_answering',
+  // Sudden Victory tiebreaker
+  SUDDEN_VICTORY_INTRO = 'sudden_victory_intro',
 }
 
 export enum UserRole {

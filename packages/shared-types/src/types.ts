@@ -167,6 +167,7 @@ export interface QuestionRevealData {
   teamAnswers: TeamAnswerResult[]
   updatedScores: TeamScore[]
   isLastQuestion: boolean
+  isSuddenVictory?: boolean
 }
 
 export interface TeamAnswerResult {

@@ -4,6 +4,7 @@ export interface TeamStorage {
   joinCode: string
   name: string
   color: string
+  deviceToken?: string // bound on first join; required for all subsequent reconnects
 }
 
 export interface AudienceStorage {

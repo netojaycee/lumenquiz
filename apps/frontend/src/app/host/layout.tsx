@@ -12,8 +12,11 @@ type AuthState = 'loading' | 'authed' | 'login'
 
 // ─── Beautiful full-page login ────────────────────────────────────────────────
 
+import { Users as UsersIcon } from 'lucide-react'
+
 function LoginPage({ onAuthed }: { onAuthed: () => void }) {
-  const { setAuthenticated, loadNetworkInfo } = useHostStore()
+  const { setAuthenticated, setUser, loadNetworkInfo } = useHostStore()
+  const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [show, setShow] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -21,17 +24,17 @@ function LoginPage({ onAuthed }: { onAuthed: () => void }) {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!password.trim()) return
+    if (!email.trim() || !password.trim()) return
     setLoading(true)
     setError(null)
     try {
-      const g = await api.post<unknown>('/auth/admin/login', { password })
-      console.log('Login success:', g)
+      const u = await api.post<any>('/auth/login', { email, password })
       setAuthenticated(true)
+      setUser(u)
       loadNetworkInfo().catch(() => {})
       onAuthed()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Invalid password')
+      setError(err instanceof Error ? err.message : 'Invalid credentials')
     } finally {
       setLoading(false)
     }
@@ -39,14 +42,12 @@ function LoginPage({ onAuthed }: { onAuthed: () => void }) {
 
   return (
     <div className="relative min-h-screen bg-[#08080E] flex items-center justify-center overflow-hidden">
-      {/* Background radial glow */}
       <div
         className="pointer-events-none absolute inset-0"
         style={{
           background: 'radial-gradient(ellipse 70% 60% at 50% 40%, rgba(59,130,246,0.10) 0%, transparent 70%)',
         }}
       />
-      {/* Moving grid */}
       <motion.div
         animate={{ backgroundPositionY: ['0px', '48px'] }}
         transition={{ duration: 6, repeat: Infinity, ease: 'linear' }}
@@ -57,7 +58,6 @@ function LoginPage({ onAuthed }: { onAuthed: () => void }) {
           backgroundSize: '48px 48px',
         }}
       />
-      {/* Top accent line */}
       <motion.div
         initial={{ scaleX: 0 }}
         animate={{ scaleX: 1 }}
@@ -72,8 +72,7 @@ function LoginPage({ onAuthed }: { onAuthed: () => void }) {
         transition={{ duration: 0.55, ease: 'easeOut' }}
         className="relative z-10 w-full max-w-sm px-6"
       >
-        {/* Logo */}
-        <div className="mb-10 text-center">
+        <div className="mb-8 text-center">
           <motion.div
             initial={{ scale: 0.7, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
@@ -85,20 +84,45 @@ function LoginPage({ onAuthed }: { onAuthed: () => void }) {
             APO<span className="text-[#3B82F6]">QUIZ</span>
           </h1>
           <p className="mt-1 text-sm font-medium tracking-widest uppercase text-white/30">
-            Admin Console
+            Host &amp; Admin Portal
           </p>
         </div>
 
-        {/* Card */}
         <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-8 backdrop-blur-sm">
-          <form onSubmit={handleSubmit} className="space-y-5">
-            <div className="space-y-2">
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div className="space-y-1">
               <label
-                htmlFor="admin-pwd"
-                className="block text-xs font-bold tracking-widest uppercase text-white/50"
+                htmlFor="admin-email"
+                className="block text-[10px] font-bold tracking-widest uppercase text-white/50"
               >
-                Admin Password
+                Email Address
               </label>
+              <input
+                id="admin-email"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@domain.com"
+                autoFocus
+                className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-white placeholder-white/20 outline-none transition-all focus:border-[#3B82F6]/60 focus:ring-2 focus:ring-[#3B82F6]/20 text-sm"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <div className="flex justify-between items-center">
+                <label
+                  htmlFor="admin-pwd"
+                  className="block text-[10px] font-bold tracking-widest uppercase text-white/50"
+                >
+                  Password
+                </label>
+                <Link
+                  href="/host/forgot-password"
+                  className="text-[10px] text-[#3B82F6] hover:underline"
+                >
+                  Forgot?
+                </Link>
+              </div>
               <div className="relative">
                 <input
                   id="admin-pwd"
@@ -106,8 +130,7 @@ function LoginPage({ onAuthed }: { onAuthed: () => void }) {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="••••••••"
-                  autoFocus
-                  className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 pr-12 text-white placeholder-white/20 outline-none transition-all focus:border-[#3B82F6]/60 focus:ring-2 focus:ring-[#3B82F6]/20"
+                  className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 pr-12 text-white placeholder-white/20 outline-none transition-all focus:border-[#3B82F6]/60 focus:ring-2 focus:ring-[#3B82F6]/20 text-sm"
                 />
                 <button
                   type="button"
@@ -124,17 +147,17 @@ function LoginPage({ onAuthed }: { onAuthed: () => void }) {
               <motion.div
                 initial={{ opacity: 0, y: -6 }}
                 animate={{ opacity: 1, y: 0 }}
-                className="flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm text-red-400"
+                className="flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-400"
               >
-                <AlertCircle className="h-4 w-4 flex-shrink-0" />
+                <AlertCircle className="h-3.5 w-3.5 flex-shrink-0" />
                 {error}
               </motion.div>
             )}
 
             <button
               type="submit"
-              disabled={loading || !password.trim()}
-              className="w-full rounded-xl bg-[#3B82F6] px-4 py-3 text-sm font-bold text-white transition-all hover:bg-blue-500 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={loading || !email.trim() || !password.trim()}
+              className="w-full mt-2 rounded-xl bg-[#3B82F6] px-4 py-2.5 text-sm font-bold text-white transition-all hover:bg-blue-500 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
             >
               {loading ? (
                 <Loader2 className="mx-auto h-5 w-5 animate-spin" />
@@ -144,9 +167,8 @@ function LoginPage({ onAuthed }: { onAuthed: () => void }) {
             </button>
           </form>
         </div>
-
         <p className="mt-6 text-center text-xs text-white/20">
-          Live Bible Quiz Platform · LAN Only
+          Live Bible Quiz Platform
         </p>
       </motion.div>
     </div>
@@ -158,13 +180,13 @@ function LoginPage({ onAuthed }: { onAuthed: () => void }) {
 export default function HostLayout({ children }: { children: React.ReactNode }): React.ReactElement {
   const [authState, setAuthState] = useState<AuthState>('loading')
   const pathname = usePathname()
-  const { networkInfo, loadNetworkInfo, setAuthenticated, reset } = useHostStore()
+  const { networkInfo, loadNetworkInfo, setAuthenticated, setUser, user, reset } = useHostStore()
   const [loggingOut, setLoggingOut] = useState(false)
 
   async function handleLogout() {
     setLoggingOut(true)
     try {
-      await api.post('/auth/admin/logout')
+      await api.post('/auth/logout')
     } catch {
       // session already gone — continue anyway
     }
@@ -174,10 +196,11 @@ export default function HostLayout({ children }: { children: React.ReactNode }):
   }
 
   useEffect(() => {
-    api.get<unknown>('/quiz')
-      .then(() => {
+    api.get<any>('/auth/session')
+      .then((sessionUser) => {
         setAuthState('authed')
         setAuthenticated(true)
+        setUser(sessionUser)
         loadNetworkInfo().catch(() => {})
       })
       .catch(() => setAuthState('login'))
@@ -191,11 +214,21 @@ export default function HostLayout({ children }: { children: React.ReactNode }):
     )
   }
 
-  if (authState === 'login') {
+  const isPublicRoute = 
+    pathname?.startsWith('/host/forgot-password') || 
+    pathname?.startsWith('/host/setup-password') || 
+    pathname?.startsWith('/host/reset-password')
+
+  if (authState === 'login' && !isPublicRoute) {
     return <LoginPage onAuthed={() => setAuthState('authed')} />
   }
 
+  if (isPublicRoute) {
+    return <div className="min-h-screen bg-[#08080E]">{children}</div>
+  }
+
   const isQuizSection = pathname?.startsWith('/host/quiz') || pathname === '/host'
+  const isUsersSection = pathname?.startsWith('/host/users')
 
   return (
     <div className="min-h-screen bg-background flex">
@@ -204,6 +237,11 @@ export default function HostLayout({ children }: { children: React.ReactNode }):
           <span className="text-xl font-bold text-white tracking-tight">
             APO<span className="text-blitz-accent">QUIZ</span>
           </span>
+          {user && (
+            <div className="mt-2 text-[10px] text-text-muted font-medium uppercase tracking-wider">
+              {user.areaName || 'Super Admin'} · {user.role}
+            </div>
+          )}
         </div>
         <nav className="flex-1 p-3 space-y-1">
           <Link
@@ -218,6 +256,21 @@ export default function HostLayout({ children }: { children: React.ReactNode }):
             <LayoutDashboard className="h-4 w-4" />
             Quizzes
           </Link>
+
+          {(user?.role === 'ADMIN' || user?.role === 'OWNER') && (
+            <Link
+              href="/host/users"
+              className={cn(
+                'flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors',
+                isUsersSection
+                  ? 'bg-surface-elevated text-white'
+                  : 'text-text-secondary hover:text-white hover:bg-surface-elevated',
+              )}
+            >
+              <UsersIcon className="h-4 w-4" />
+              Users
+            </Link>
+          )}
         </nav>
         <div className="p-4 border-t border-border space-y-3">
           {networkInfo ? (

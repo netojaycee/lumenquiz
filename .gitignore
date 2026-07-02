@@ -16,6 +16,17 @@ Thumbs.db
 notes/
 docs/
 apps/desktop/
+apps/backend/data/sessions/
+apps/backend/uploads/uc-audio/
+# --- Ignore everything in public EXCEPT the sounds folder ---
+# 1. Target the contents of public, not the public folder itself
+apps/backend/public/*
+
+# 2. Allow the sounds directory structure to be crawled
+!apps/backend/public/sounds/
+
+# 3. If there are subfolders/files inside sounds, ensure they are tracked too
+!apps/backend/public/sounds/**
 
 .idea/
 
@@ -24,3 +35,6 @@ AGENTS.md
 CLAUDE.md
 .agents/
 .claude/
+
+
+multitenancy_plan.md

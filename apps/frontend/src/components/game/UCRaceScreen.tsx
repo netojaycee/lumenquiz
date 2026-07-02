@@ -8,7 +8,9 @@ interface UCTeamState {
   score: number
   progress: number   // 0–1
   remaining: number
+  total: number
   isActive: boolean
+  isCompleted: boolean
 }
 
 interface UCRaceScreenProps {
@@ -17,268 +19,320 @@ interface UCRaceScreenProps {
   timeLeft: number
   lastAction?: string | null
   activeTeamName?: string
+  activeTeamColor?: string
 }
 
-// ─── Runner avatar (letter + glow) ───────────────────────────────────────────
-
-function Runner({ team, size = 40 }: { team: UCTeamState; size?: number }) {
-  const initial = team.teamName[0]?.toUpperCase() ?? '?'
-  return (
-    <motion.div
-      animate={team.isActive ? { scale: [1, 1.12, 1] } : { scale: 1 }}
-      transition={{ repeat: Infinity, duration: 1.4, ease: 'easeInOut' }}
-      style={{
-        width: size,
-        height: size,
-        borderRadius: '50%',
-        backgroundColor: team.teamColor,
-        border: `3px solid ${team.isActive ? 'white' : team.teamColor}`,
-        boxShadow: team.isActive
-          ? `0 0 0 4px ${team.teamColor}44, 0 0 20px ${team.teamColor}88`
-          : `0 0 8px ${team.teamColor}66`,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        fontSize: size * 0.38,
-        fontWeight: 900,
-        color: 'white',
-        flexShrink: 0,
-        zIndex: 2,
-        position: 'relative',
-      }}
-    >
-      {initial}
-      {/* Active crown */}
-      {team.isActive && (
-        <motion.div
-          initial={{ opacity: 0, y: 4 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="absolute -top-5 left-1/2 -translate-x-1/2 text-base"
-        >
-          👑
-        </motion.div>
-      )}
-    </motion.div>
-  )
+function timerColor(t: number) {
+  if (t <= 5) return '#EF4444'
+  if (t <= 15) return '#F59E0B'
+  return '#22C55E'
 }
 
-// ─── Single lane ─────────────────────────────────────────────────────────────
-
-function RaceLane({ team, index }: { team: UCTeamState; index: number }) {
-  const LANE_H = 64
-
-  return (
-    <motion.div
-      initial={{ opacity: 0, x: -60 }}
-      animate={{ opacity: 1, x: 0 }}
-      transition={{ delay: index * 0.1, type: 'spring', stiffness: 60 }}
-      className="relative flex items-center gap-4"
-      style={{ height: LANE_H }}
-    >
-      {/* Team name label */}
-      <div
-        className="w-36 flex-shrink-0 text-right"
-        style={{ opacity: team.isActive ? 1 : 0.55 }}
-      >
-        <p className="text-sm font-black text-white leading-tight truncate">{team.teamName}</p>
-        <p className="text-[10px] font-bold" style={{ color: team.teamColor }}>
-          {team.score} pts · {team.remaining} left
-        </p>
-      </div>
-
-      {/* Track lane */}
-      <div className="relative flex-1 flex items-center" style={{ height: LANE_H }}>
-        {/* Lane background */}
-        <div
-          className="absolute inset-y-3 left-0 right-0 rounded-xl overflow-hidden"
-          style={{
-            backgroundColor: 'rgba(255,255,255,0.04)',
-            border: team.isActive ? `1px solid ${team.teamColor}44` : '1px solid rgba(255,255,255,0.06)',
-          }}
-        >
-          {/* Checkpoint markers */}
-          {[25, 50, 75].map((pct) => (
-            <div
-              key={pct}
-              className="absolute top-0 bottom-0 w-px"
-              style={{ left: `${pct}%`, backgroundColor: 'rgba(255,255,255,0.08)' }}
-            />
-          ))}
-
-          {/* Progress fill */}
-          <motion.div
-            animate={{ width: `${Math.max(team.progress * 100, 0)}%` }}
-            transition={{ type: 'spring', stiffness: 80, damping: 18 }}
-            className="absolute inset-y-0 left-0 rounded-xl"
-            style={{
-              background: `linear-gradient(90deg, ${team.teamColor}88, ${team.teamColor})`,
-              minWidth: team.progress > 0 ? 8 : 0,
-            }}
-          />
-
-          {/* % label */}
-          <div className="absolute inset-0 flex items-center justify-end pr-3">
-            <span className="text-[10px] font-bold text-white/30">
-              {Math.round(team.progress * 100)}%
-            </span>
-          </div>
-        </div>
-
-        {/* Runner at leading edge */}
-        <motion.div
-          animate={{ left: `calc(${Math.max(team.progress * 100, 0)}% - 20px)` }}
-          transition={{ type: 'spring', stiffness: 80, damping: 18 }}
-          className="absolute"
-          style={{ zIndex: 3 }}
-        >
-          <Runner team={team} size={40} />
-        </motion.div>
-      </div>
-
-      {/* Finish flag */}
-      <div className="flex-shrink-0 text-2xl opacity-30">🏁</div>
-    </motion.div>
-  )
-}
-
-// ─── Timer ring ───────────────────────────────────────────────────────────────
-
-function TimerRing({ seconds, maxSeconds = 60 }: { seconds: number; maxSeconds?: number }) {
-  const pct = Math.max(0, seconds / maxSeconds)
-  const radius = 32
-  const circ = 2 * Math.PI * radius
-  const dash = circ * pct
-
-  const color = seconds <= 10 ? '#EF4444' : seconds <= 20 ? '#F59E0B' : '#22C55E'
-
-  return (
-    <div className="relative flex items-center justify-center" style={{ width: 88, height: 88 }}>
-      <svg width="88" height="88" className="absolute rotate-[-90deg]">
-        <circle cx="44" cy="44" r={radius} fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="5" />
-        <motion.circle
-          cx="44" cy="44" r={radius}
-          fill="none"
-          stroke={color}
-          strokeWidth="5"
-          strokeLinecap="round"
-          strokeDasharray={circ}
-          animate={{ strokeDashoffset: circ - dash }}
-          transition={{ duration: 0.4, ease: 'easeOut' }}
-        />
-      </svg>
-      <motion.span
-        key={seconds}
-        initial={{ scale: 1.3, opacity: 0.6 }}
-        animate={{ scale: 1, opacity: 1 }}
-        className="relative text-2xl font-black tabular-nums"
-        style={{ color }}
-      >
-        {seconds}
-      </motion.span>
-    </div>
-  )
-}
-
-// ─── Main component ───────────────────────────────────────────────────────────
-
-export function UCRaceScreen({ teams, currentQuestion, timeLeft, lastAction, activeTeamName }: UCRaceScreenProps) {
+export function UCRaceScreen({
+  teams,
+  currentQuestion,
+  timeLeft,
+  lastAction,
+  activeTeamName,
+  activeTeamColor,
+}: UCRaceScreenProps) {
   const activeTeam = teams.find((t) => t.isActive)
+  const accentColor = activeTeamColor ?? activeTeam?.teamColor ?? '#3B82F6'
+  const tColor = timerColor(timeLeft)
+  const isUrgent = timeLeft <= 5
+  const isWarning = timeLeft <= 15 && !isUrgent
+
+  // Sort by score descending; ties broken by progress
+  const sortedTeams = [...teams].sort(
+    (a, b) => b.score - a.score || b.progress - a.progress,
+  )
+  const maxScore = Math.max(1, ...teams.map((t) => t.score))
 
   return (
-    <div className="relative flex min-h-screen flex-col overflow-hidden bg-[#0F0F13]">
-      {/* Background radial from active team */}
-      {activeTeam && (
-        <motion.div
-          key={activeTeam.teamId}
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          className="pointer-events-none absolute inset-0"
-          style={{
-            background: `radial-gradient(ellipse 60% 50% at 50% 0%, ${activeTeam.teamColor}15 0%, transparent 70%)`,
-          }}
-        />
-      )}
+    <div className="relative flex min-h-screen flex-col overflow-hidden bg-[#0A0A0F] select-none">
+      {/* ── Ambient background glow — shifts with tension ── */}
+      <motion.div
+        className="pointer-events-none absolute inset-0"
+        animate={{
+          background: isUrgent
+            ? `radial-gradient(ellipse 90% 70% at 50% 50%, rgba(239,68,68,0.16) 0%, transparent 65%)`
+            : isWarning
+              ? `radial-gradient(ellipse 80% 60% at 50% 40%, rgba(245,158,11,0.10) 0%, transparent 65%)`
+              : `radial-gradient(ellipse 70% 55% at 50% 30%, ${accentColor}14 0%, transparent 65%)`,
+        }}
+        transition={{ duration: 1 }}
+      />
 
-      {/* Header */}
-      <div className="relative z-10 flex items-center justify-between px-10 pt-8 pb-4">
-        <div>
-          <p className="text-xs font-bold tracking-[0.3em] uppercase text-white/30 mb-1">
-            Ultimate Challenge
-          </p>
-          <h1 className="text-4xl font-black text-white">Race to the Finish</h1>
-        </div>
-        <TimerRing seconds={timeLeft} maxSeconds={60} />
-      </div>
+      {/* ── Red vignette flash at ≤5s ── */}
+      <AnimatePresence>
+        {isUrgent && (
+          <motion.div
+            key={`flash-${timeLeft}`}
+            initial={{ opacity: 0.35 }}
+            animate={{ opacity: 0 }}
+            transition={{ duration: 0.7 }}
+            className="pointer-events-none absolute inset-0"
+            style={{ background: 'radial-gradient(ellipse 100% 100% at 50% 50%, rgba(239,68,68,0.25) 0%, transparent 70%)' }}
+          />
+        )}
+      </AnimatePresence>
 
-      {/* Race track */}
-      <div className="relative z-10 flex-1 flex flex-col justify-center px-10 gap-3 py-4">
-        {/* START / FINISH labels */}
-        <div className="flex items-center mb-1">
-          <div className="w-36 flex-shrink-0" />
-          <div className="flex-1 flex justify-between px-1">
-            <span className="text-[10px] font-bold tracking-widest uppercase text-white/20">Start</span>
-            <span className="text-[10px] font-bold tracking-widest uppercase text-white/20">Finish</span>
+      {/* ── Top team-color accent stripe ── */}
+      <motion.div
+        className="absolute top-0 left-0 right-0 h-[3px] origin-left"
+        style={{ backgroundColor: accentColor }}
+        initial={{ scaleX: 0 }}
+        animate={{ scaleX: 1 }}
+        transition={{ duration: 0.5, ease: 'easeOut' }}
+      />
+
+      {/* ── Header: active team identity ── */}
+      <motion.div
+        initial={{ opacity: 0, y: -12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.1 }}
+        className="relative z-10 flex items-center justify-between px-10 pt-7 pb-3"
+      >
+        {/* Active team */}
+        <div className="flex items-center gap-4">
+          <motion.span
+            animate={isUrgent ? { rotate: [-8, 8, -8] } : isWarning ? { rotate: [-4, 4, -4] } : {}}
+            transition={{ repeat: Infinity, duration: 0.35 }}
+            className="text-3xl leading-none"
+          >
+            👑
+          </motion.span>
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-[0.35em] text-white/25 mb-0.5">
+              Now Playing
+            </p>
+            <motion.h2
+              className="text-3xl font-black leading-none"
+              style={{ color: accentColor, textShadow: `0 0 20px ${accentColor}60` }}
+              animate={isUrgent ? { x: [0, -3, 3, -3, 3, 0] } : {}}
+              transition={{ duration: 0.4, repeat: isUrgent ? Infinity : 0 }}
+            >
+              {activeTeamName ?? '—'}
+            </motion.h2>
           </div>
-          <div className="w-10 flex-shrink-0" />
         </div>
 
-        {teams
-          .slice()
-          .sort((a, b) => b.progress - a.progress)
-          .map((team, i) => (
-            <RaceLane key={team.teamId} team={team} index={i} />
-          ))}
-      </div>
+        {/* Right: last action + UC badge */}
+        <div className="flex items-center gap-5">
+          <AnimatePresence mode="wait">
+            {lastAction && (
+              <motion.span
+                key={lastAction}
+                initial={{ opacity: 0, x: 10 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0 }}
+                className="text-sm italic text-white/35"
+              >
+                {lastAction}
+              </motion.span>
+            )}
+          </AnimatePresence>
+          <div className="rounded-full border border-white/10 bg-white/[0.04] px-4 py-1.5">
+            <p className="text-[10px] font-black uppercase tracking-[0.25em] text-white/40">
+              Ultimate Challenge
+            </p>
+          </div>
+        </div>
+      </motion.div>
 
-      {/* Question panel */}
-      <div className="relative z-10 mx-10 mb-8 rounded-2xl border border-white/8 bg-white/[0.04] p-5 backdrop-blur">
-        <div className="flex items-start gap-4">
-          <div className="flex-1">
-            <div className="flex items-center gap-2 mb-2">
-              {activeTeam && (
-                <div className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: activeTeam.teamColor }} />
-              )}
-              <span className="text-xs font-bold tracking-widest uppercase" style={{ color: activeTeam?.teamColor ?? 'white' }}>
-                {activeTeamName ?? 'Waiting…'}
-              </span>
-              {lastAction && (
-                <AnimatePresence mode="wait">
-                  <motion.span
-                    key={lastAction}
-                    initial={{ opacity: 0, x: 8 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0 }}
-                    className="ml-2 text-xs text-white/40 italic"
-                  >
-                    {lastAction}
-                  </motion.span>
-                </AnimatePresence>
-              )}
-            </div>
-            <AnimatePresence mode="wait">
-              {currentQuestion ? (
-                <motion.p
-                  key={currentQuestion.id}
-                  initial={{ opacity: 0, y: 8 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -8 }}
-                  transition={{ type: 'spring', stiffness: 90 }}
-                  className="text-2xl font-bold text-white leading-snug"
+      {/* ══════════════════════════════════════════════════════════════
+          CENTER: Question hero + Timer (the two dominant elements)
+      ══════════════════════════════════════════════════════════════ */}
+      <div className="relative z-10 flex flex-1 flex-col items-center justify-center gap-8 px-10">
+
+        {/* ── QUESTION CARD ── */}
+        <div className="w-full max-w-5xl">
+          <AnimatePresence mode="wait">
+            {currentQuestion ? (
+              <motion.div
+                key={currentQuestion.id}
+                initial={{ opacity: 0, y: 28, scale: 0.96 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -20, scale: 0.96 }}
+                transition={{ type: 'spring', stiffness: 90, damping: 16 }}
+                className="relative rounded-3xl px-12 py-10 text-center"
+                style={{
+                  border: `2px solid ${accentColor}45`,
+                  background: `linear-gradient(135deg, ${accentColor}0C 0%, rgba(255,255,255,0.018) 100%)`,
+                  boxShadow: isUrgent
+                    ? `0 0 80px rgba(239,68,68,0.28), 0 0 0 1px rgba(239,68,68,0.15), inset 0 0 40px rgba(239,68,68,0.04)`
+                    : `0 0 60px ${accentColor}22, inset 0 0 40px ${accentColor}06`,
+                }}
+              >
+                {/* Animated shimmer line at top of card */}
+                <motion.div
+                  className="absolute top-0 left-8 right-8 h-px rounded-full"
+                  style={{ background: `linear-gradient(90deg, transparent, ${accentColor}80, transparent)` }}
+                  animate={{ opacity: [0.4, 1, 0.4] }}
+                  transition={{ repeat: Infinity, duration: 2.5, ease: 'easeInOut' }}
+                />
+
+                <p
+                  className="font-black text-white leading-snug"
+                  style={{ fontSize: 'clamp(2rem, 4.5vw, 4rem)' }}
                 >
                   {currentQuestion.text}
-                </motion.p>
-              ) : (
-                <motion.p
-                  key="waiting"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  className="text-xl text-white/40"
-                >
-                  All teams completed! 🎉
-                </motion.p>
-              )}
-            </AnimatePresence>
-          </div>
+                </p>
+              </motion.div>
+            ) : (
+              <motion.div
+                key="done"
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                className="flex flex-col items-center gap-4"
+              >
+                <span className="text-7xl">🎉</span>
+                <p className="text-4xl font-black text-white">All questions completed!</p>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+
+        {/* ── TIMER ── */}
+        <div className="relative flex flex-col items-center gap-1">
+          {/* Outer glow ring */}
+          <motion.div
+            className="absolute rounded-full"
+            animate={{
+              width: isUrgent ? 220 : isWarning ? 196 : 172,
+              height: isUrgent ? 220 : isWarning ? 196 : 172,
+              boxShadow: isUrgent
+                ? `0 0 90px rgba(239,68,68,0.55), 0 0 130px rgba(239,68,68,0.25)`
+                : isWarning
+                  ? `0 0 70px rgba(245,158,11,0.45)`
+                  : `0 0 50px ${accentColor}45`,
+              borderColor: isUrgent
+                ? 'rgba(239,68,68,0.35)'
+                : isWarning
+                  ? 'rgba(245,158,11,0.30)'
+                  : `${accentColor}35`,
+            }}
+            style={{ border: '2px solid', backgroundColor: 'transparent' }}
+            transition={{ duration: 0.5 }}
+          />
+
+          {/* Number — keyed so it re-animates every second */}
+          <motion.span
+            key={timeLeft}
+            initial={{ scale: 1.18, opacity: 0.65 }}
+            animate={{ scale: 1, opacity: 1 }}
+            transition={{ type: 'spring', stiffness: 320, damping: 20 }}
+            className="relative tabular-nums font-black leading-none"
+            style={{
+              fontSize: '9.5rem',
+              color: tColor,
+              textShadow: `0 0 50px ${tColor}90, 0 0 100px ${tColor}40`,
+            }}
+          >
+            {timeLeft}
+          </motion.span>
+
+          <p className="text-[10px] font-bold uppercase tracking-[0.4em] text-white/20">
+            seconds
+          </p>
+        </div>
+      </div>
+
+      {/* ══════════════════════════════════════════════════════════════
+          BOTTOM: Score bars
+      ══════════════════════════════════════════════════════════════ */}
+      <div className="relative z-10 px-10 pb-8 pt-2">
+        <p className="mb-3 text-[9px] font-black uppercase tracking-[0.3em] text-white/18">
+          Scoreboard
+        </p>
+        <div className="space-y-2.5">
+          {sortedTeams.map((team, i) => {
+            const isLeader = i === 0 && team.score > 0
+            const barPct = maxScore > 0 ? (team.score / maxScore) * 100 : 0
+
+            return (
+              <motion.div
+                key={team.teamId}
+                layout
+                transition={{ type: 'spring', stiffness: 120, damping: 20 }}
+                className="flex items-center gap-3"
+              >
+                {/* Rank */}
+                <span className="w-4 flex-shrink-0 text-right text-xs font-black text-white/20">
+                  {i + 1}
+                </span>
+
+                {/* Team dot + name */}
+                <div className="flex w-28 flex-shrink-0 items-center gap-2">
+                  <motion.div
+                    className="h-2.5 w-2.5 flex-shrink-0 rounded-full"
+                    style={{ backgroundColor: team.teamColor }}
+                    animate={team.isActive ? { scale: [1, 1.5, 1] } : {}}
+                    transition={{ repeat: Infinity, duration: 1.1 }}
+                  />
+                  <span
+                    className="truncate text-sm font-black leading-tight"
+                    style={{
+                      color: team.isActive
+                        ? team.teamColor
+                        : team.isCompleted
+                          ? 'rgba(255,255,255,0.55)'
+                          : 'rgba(255,255,255,0.65)',
+                    }}
+                  >
+                    {team.teamName}
+                  </span>
+                </div>
+
+                {/* Score bar */}
+                <div className="relative flex-1">
+                  <div className="h-6 overflow-hidden rounded-xl border border-white/[0.05] bg-white/[0.03]">
+                    <motion.div
+                      className="h-full rounded-xl"
+                      animate={{ width: `${barPct}%` }}
+                      transition={{ type: 'spring', stiffness: 55, damping: 16 }}
+                      style={{
+                        background: `linear-gradient(90deg, ${team.teamColor}70, ${team.teamColor})`,
+                        minWidth: team.score > 0 ? 8 : 0,
+                        boxShadow: team.isActive
+                          ? `0 0 14px ${team.teamColor}70`
+                          : undefined,
+                      }}
+                    />
+                  </div>
+                  {/* Completed badge inside bar */}
+                  {team.isCompleted && (
+                    <div className="absolute inset-0 flex items-center justify-end pr-2">
+                      <span className="text-[9px] font-black uppercase tracking-wide text-white/40">
+                        done
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Score + trophy */}
+                <div className="flex w-24 flex-shrink-0 items-center justify-end gap-1.5">
+                  <motion.span
+                    layout
+                    className="text-base font-black tabular-nums"
+                    style={{ color: team.teamColor }}
+                  >
+                    {team.score}
+                  </motion.span>
+                  <span className="text-[10px] text-white/25">pts</span>
+                  {isLeader && (
+                    <motion.span
+                      animate={{ scale: [1, 1.2, 1] }}
+                      transition={{ repeat: Infinity, duration: 2 }}
+                      className="text-sm"
+                    >
+                      🏆
+                    </motion.span>
+                  )}
+                </div>
+              </motion.div>
+            )
+          })}
         </div>
       </div>
     </div>

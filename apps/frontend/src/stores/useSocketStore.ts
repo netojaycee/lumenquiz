@@ -21,16 +21,40 @@ import type {
   UCStatePayload,
   UCQuestionUpdatePayload,
   UCTeamDonePayload,
+  UCTurnReviewPayload,
+  UCAudioPlayPayload,
   ClueStatePayload,
   ClueNextPayload,
   ClueAnswerResultPayload,
+  SuddenVictoryIntroPayload,
 } from '@apoquiz/socket-events'
 import { UserRole, SessionStatus } from '@apoquiz/shared-types'
 import { getSocketUrl } from '@/lib/api'
+import { updateClockOffset } from '@/lib/clock'
+
+// ─── Store module cache ───────────────────────────────────────────────────────
+// Dynamic imports avoid circular dependency issues at module load time.
+// We pre-warm them in connect() so all subsequent event handlers can call
+// getState() synchronously without going through the microtask queue.
+
+type ScreenStoreMod = typeof import('./useScreenStore')
+type TeamStoreMod = typeof import('./useTeamStore')
+type AudienceStoreMod = typeof import('./useAudienceStore')
+
+let _screen: ScreenStoreMod | null = null
+let _team: TeamStoreMod | null = null
+let _audience: AudienceStoreMod | null = null
+
+const ss = () => _screen?.useScreenStore.getState()
+const ts = () => _team?.useTeamStore.getState()
+const au = () => _audience?.useAudienceStore.getState()
+
+// ─── Store interface ──────────────────────────────────────────────────────────
 
 interface SocketStore {
   socket: Socket | null
   connected: boolean
+  midSessionDisconnect: boolean  // true when socket drops AFTER a session was already active
   error: string | null
   connect: () => Socket
   disconnect: () => void
@@ -43,11 +67,18 @@ interface SocketStore {
 export const useSocketStore = create<SocketStore>((set, get) => ({
   socket: null,
   connected: false,
+  midSessionDisconnect: false,
   error: null,
 
   connect() {
     const existing = get().socket
     if (existing?.connected) return existing
+
+    // Pre-warm store imports — dynamic to avoid circular deps at load time,
+    // but resolved once and cached so all event handlers run synchronously.
+    if (!_screen) void import('./useScreenStore').then(m => { _screen = m })
+    if (!_team)   void import('./useTeamStore').then(m => { _team = m })
+    if (!_audience) void import('./useAudienceStore').then(m => { _audience = m })
 
     const socket = io(getSocketUrl(), {
       transports: ['websocket', 'polling'],
@@ -62,288 +93,207 @@ export const useSocketStore = create<SocketStore>((set, get) => ({
     })
 
     socket.on(CONNECTION_EVENTS.DISCONNECT, () => {
-      set({ connected: false })
+      // Only flag mid-session if we were already confirmed connected
+      set((s) => ({ connected: false, midSessionDisconnect: s.connected }))
     })
 
     socket.on(CONNECTION_EVENTS.CONNECT_ERROR, (err: Error) => {
       set({ error: err.message, connected: false })
     })
 
-    // ── Game event handlers ─────────────────────────────────────────────
-    // These update role-specific stores. Stores imported inside handlers
-    // to avoid circular dependency issues at module load time.
+    // ── Game event handlers ─────────────────────────────────────────────────
 
     socket.on(SERVER_EVENTS.SESSION_STATE, (data: SessionStatePayload) => {
-      import('./useScreenStore').then(({ useScreenStore }) => {
-        useScreenStore.getState().applySessionState(data)
-      })
-      import('./useTeamStore').then(({ useTeamStore }) => {
-        useTeamStore.getState().applySessionState(data)
-      })
-      import('./useAudienceStore').then(({ useAudienceStore }) => {
-        useAudienceStore.getState().applySessionState(data)
-      })
+      // Sync clock on every state snapshot — server always includes serverTime
+      if ((data as any).serverTime) updateClockOffset((data as any).serverTime)
+      // Session state received → reconnect succeeded, clear the overlay
+      set({ midSessionDisconnect: false })
+      ss()?.applySessionState(data)
+      ts()?.applySessionState(data)
+      au()?.applySessionState(data)
+    })
+
+    // Dedicated clock sync event for high-frequency updates (e.g. on question open)
+    socket.on(SERVER_EVENTS.CLOCK_SYNC, (data: { serverTime: number }) => {
+      updateClockOffset(data.serverTime)
     })
 
     socket.on(SERVER_EVENTS.ROUND_START, (data: RoundStartPayload) => {
-      import('./useScreenStore').then(({ useScreenStore }) => {
-        useScreenStore.getState().setRoundStart(data)
-      })
-      import('./useTeamStore').then(({ useTeamStore }) => {
-        useTeamStore.getState().setRoundStart()
-      })
-      import('./useAudienceStore').then(({ useAudienceStore }) => {
-        useAudienceStore.getState().setRoundStart()
-      })
+      ss()?.setRoundStart(data)
+      ts()?.setRoundStart(data)
+      au()?.setRoundStart()
     })
 
     socket.on(
       SERVER_EVENTS.ROUND_RULES_SHOW,
       (data: { round: { name?: string | null }; rules: string[] }) => {
-        import('./useScreenStore').then(({ useScreenStore }) => {
-          useScreenStore.getState().setRulesCard(data)
-        })
+        ss()?.setRulesCard(data)
       },
     )
 
     socket.on(SERVER_EVENTS.QUESTION_OPEN, (data: QuestionOpenPayload) => {
-      import('./useScreenStore').then(({ useScreenStore }) => {
-        useScreenStore.getState().setCurrentQuestion(data)
-      })
-      import('./useTeamStore').then(({ useTeamStore }) => {
-        useTeamStore.getState().setCurrentQuestion(data)
-      })
-      import('./useAudienceStore').then(({ useAudienceStore }) => {
-        useAudienceStore.getState().setCurrentQuestion(data)
-      })
+      ss()?.setCurrentQuestion(data)
+      ts()?.setCurrentQuestion(data)
+      au()?.setCurrentQuestion(data)
     })
 
     socket.on(SERVER_EVENTS.QUESTION_ALL_ANSWERED, () => {
-      import('./useScreenStore').then(({ useScreenStore }) => {
-        useScreenStore.getState().setAllAnswered()
-      })
-      import('./useTeamStore').then(({ useTeamStore }) => {
-        useTeamStore.getState().setAllAnswered()
-      })
+      ss()?.setAllAnswered()
+      ts()?.setAllAnswered()
     })
 
     socket.on(SERVER_EVENTS.QUESTION_TIMER_ELAPSED, () => {
-      import('./useScreenStore').then(({ useScreenStore }) => {
-        useScreenStore.getState().setTimerElapsed()
-      })
-      import('./useTeamStore').then(({ useTeamStore }) => {
-        useTeamStore.getState().setTimerElapsed()
-      })
+      ss()?.setTimerElapsed()
+      ts()?.setTimerElapsed()
     })
 
     socket.on(SERVER_EVENTS.QUESTION_REVEAL, (data: QuestionRevealPayload) => {
-      import('./useScreenStore').then(({ useScreenStore }) => {
-        useScreenStore.getState().setReveal(data)
-      })
-      import('./useTeamStore').then(({ useTeamStore }) => {
-        useTeamStore.getState().setReveal(data)
-      })
-      import('./useAudienceStore').then(({ useAudienceStore }) => {
-        useAudienceStore.getState().setReveal(data)
-      })
+      ss()?.setReveal(data)
+      ts()?.setReveal(data)
+      au()?.setReveal(data)
     })
 
     socket.on(SERVER_EVENTS.SCORES_UPDATE, (data: ScoresUpdatePayload) => {
-      import('./useScreenStore').then(({ useScreenStore }) => {
-        const status = useScreenStore.getState().sessionStatus
-        // Suppress premature score updates while a question is in progress — wait for reveal
-        if (status === SessionStatus.QUESTION_OPEN || status === SessionStatus.QUESTION_LOCKED) return
-        useScreenStore.getState().setScores(data.scores)
-      })
+      const store = ss()
+      if (!store) return
+      // Suppress premature score updates while a question is in progress — wait for reveal
+      const { sessionStatus: status } = store
+      if (status === SessionStatus.QUESTION_OPEN || status === SessionStatus.QUESTION_LOCKED) return
+      store.setScores(data.scores)
     })
 
     socket.on(SERVER_EVENTS.ROUND_VOTE_OPEN, (data: RoundVoteOpenPayload) => {
-      import('./useScreenStore').then(({ useScreenStore }) => {
-        useScreenStore.getState().setVoteOpen(data)
-      })
-      import('./useAudienceStore').then(({ useAudienceStore }) => {
-        useAudienceStore.getState().setVoteOpen(data)
-      })
+      ss()?.setVoteOpen(data)
+      au()?.setVoteOpen(data)
     })
 
     socket.on(SERVER_EVENTS.ROUND_VOTE_UPDATE, (data: RoundVoteUpdatePayload) => {
-      import('./useScreenStore').then(({ useScreenStore }) => {
-        useScreenStore.getState().updateVote(data)
-      })
-      import('./useAudienceStore').then(({ useAudienceStore }) => {
-        useAudienceStore.getState().updateVote(data)
-      })
+      ss()?.updateVote(data)
+      au()?.updateVote(data)
     })
 
     socket.on(SERVER_EVENTS.ROUND_VOTE_CLOSE, () => {
-      import('./useScreenStore').then(({ useScreenStore }) => {
-        useScreenStore.getState().setVoteClosed()
-      })
-      import('./useAudienceStore').then(({ useAudienceStore }) => {
-        useAudienceStore.getState().setVoteClosed()
-      })
+      ss()?.setVoteClosed()
+      au()?.setVoteClosed()
     })
 
     socket.on(SERVER_EVENTS.ROUND_SUMMARY, (data: RoundSummaryPayload) => {
-      import('./useScreenStore').then(({ useScreenStore }) => {
-        useScreenStore.getState().setRoundSummary(data)
-      })
-      import('./useTeamStore').then(({ useTeamStore }) => {
-        useTeamStore.getState().setRoundSummary(data)
-      })
-      import('./useAudienceStore').then(({ useAudienceStore }) => {
-        useAudienceStore.getState().setRoundSummary(data)
-      })
+      ss()?.setRoundSummary(data)
+      ts()?.setRoundSummary(data)
+      au()?.setRoundSummary(data)
     })
 
     socket.on(SERVER_EVENTS.SESSION_END, (data: SessionEndPayload) => {
-      import('./useScreenStore').then(({ useScreenStore }) => {
-        useScreenStore.getState().setSessionEnd(data)
-      })
-      import('./useTeamStore').then(({ useTeamStore }) => {
-        useTeamStore.getState().setSessionEnd(data)
-      })
-      import('./useAudienceStore').then(({ useAudienceStore }) => {
-        useAudienceStore.getState().setSessionEnd(data)
-      })
+      ss()?.setSessionEnd(data)
+      ts()?.setSessionEnd(data)
+      au()?.setSessionEnd(data)
     })
 
     // Audience prediction points — server emits to audience:{id} room after reveal
     socket.on(SERVER_EVENTS.AUDIENCE_POINTS_UPDATE, (data: AudiencePointsUpdatePayload) => {
-      import('./useAudienceStore').then(({ useAudienceStore }) => {
-        useAudienceStore.getState().setPoints(data.totalPoints)
-      })
+      au()?.setPoints(data.totalPoints)
     })
 
     // Emoji reactions for screen (backend emits to screen room as AUDIENCE_EVENTS.REACT)
     socket.on(AUDIENCE_EVENTS.REACT, (data: EmojiReactPayload) => {
-      import('./useScreenStore').then(({ useScreenStore }) => {
-        useScreenStore.getState().addEmojiReaction(data)
-      })
+      ss()?.addEmojiReaction(data)
     })
 
     // Real-time audience head count (emitted on every join/leave)
     socket.on('audience:count:update', (data: { count: number }) => {
-      import('./useScreenStore').then(({ useScreenStore }) => {
-        useScreenStore.getState().setAudienceCount(data.count)
-      })
+      ss()?.setAudienceCount(data.count)
     })
 
     // Team online presence — broadcast to full session room so screen + moderator both update
     socket.on('team:connected', (data: { teamId: string }) => {
-      import('./useScreenStore').then(({ useScreenStore }) => {
-        useScreenStore.getState().setTeamConnected(data.teamId)
-      })
+      ss()?.setTeamConnected(data.teamId)
     })
 
     socket.on('team:disconnected', (data: { teamId: string }) => {
-      import('./useScreenStore').then(({ useScreenStore }) => {
-        useScreenStore.getState().setTeamDisconnected(data.teamId)
-      })
+      ss()?.setTeamDisconnected(data.teamId)
     })
 
     // Tile Blitz specific events
     socket.on(SERVER_EVENTS.TILEBLITZ_STATE, (data: unknown) => {
-      import('./useScreenStore').then(({ useScreenStore }) => {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        useScreenStore.getState().setTileBlitzState(data as any)
-      })
-      import('./useTeamStore').then(({ useTeamStore }) => {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        if (useTeamStore.getState().setTileBlitzState)
-          useTeamStore.getState().setTileBlitzState?.(data as any)
-      })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ss()?.setTileBlitzState(data as any)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ts()?.setTileBlitzState?.(data as any)
     })
 
     socket.on(SERVER_EVENTS.TILEBLITZ_BONUS_CLAIMED, (data: TileBlitzBonusClaimedPayload) => {
-      import('./useScreenStore').then(({ useScreenStore }) => {
-        useScreenStore.getState().setTileBlitzBonusClaimed(data)
-      })
-      import('./useTeamStore').then(({ useTeamStore }) => {
-        useTeamStore.getState().setTileBlitzBonusClaimed?.(data)
-      })
+      ss()?.setTileBlitzBonusClaimed(data)
+      ts()?.setTileBlitzBonusClaimed?.(data)
     })
 
     socket.on(SERVER_EVENTS.TILEBLITZ_BONUS_RESULT, (data: TileBlitzBonusResultPayload) => {
-      import('./useScreenStore').then(({ useScreenStore }) => {
-        useScreenStore.getState().setTileBlitzBonusResult(data)
-      })
-      import('./useTeamStore').then(({ useTeamStore }) => {
-        useTeamStore.getState().setTileBlitzBonusResult?.(data)
-      })
+      ss()?.setTileBlitzBonusResult(data)
+      ts()?.setTileBlitzBonusResult?.(data)
     })
 
     // Bonus timer: received when moderator grants bonus — carries startTime + durationMs
     socket.on('tileblitz:bonus:granted', (data: { bonusTeamId: string; questionId: string; bonusTimerStartTime: number; bonusTimerDurationMs: number }) => {
-      import('./useScreenStore').then(({ useScreenStore }) => {
-        useScreenStore.getState().setTileBlitzBonusTimer({ startTime: data.bonusTimerStartTime, durationMs: data.bonusTimerDurationMs })
-      })
-      import('./useTeamStore').then(({ useTeamStore }) => {
-        useTeamStore.getState().setBonusTimer?.({ startTime: data.bonusTimerStartTime, durationMs: data.bonusTimerDurationMs })
-      })
+      ss()?.setTileBlitzBonusTimer({ startTime: data.bonusTimerStartTime, durationMs: data.bonusTimerDurationMs })
+      ts()?.setBonusTimer?.({ startTime: data.bonusTimerStartTime, durationMs: data.bonusTimerDurationMs })
     })
 
     // Bonus timer elapsed — server fires this when the half-time window closes
     socket.on(SERVER_EVENTS.TILEBLITZ_BONUS_TIMER_ELAPSED, () => {
-      import('./useTeamStore').then(({ useTeamStore }) => {
-        useTeamStore.getState().setBonusTimerElapsed?.()
-      })
+      ts()?.setBonusTimerElapsed?.()
     })
 
     socket.on(SERVER_EVENTS.CUMULATIVE_SCORES, (data: CumulativeScoresPayload) => {
-      import('./useScreenStore').then(({ useScreenStore }) => {
-        useScreenStore.getState().setCumulative(data)
-      })
-      import('./useTeamStore').then(({ useTeamStore }) => {
-        useTeamStore.getState().setCumulative?.(data)
-      })
+      ss()?.setCumulative(data)
+      ts()?.setCumulative?.(data)
     })
 
     // Ultimate Challenge specific events
     socket.on(SERVER_EVENTS.UC_STATE, (data: UCStatePayload) => {
-      import('./useScreenStore').then(({ useScreenStore }) => {
-        useScreenStore.getState().setUCState(data)
-      })
-      import('./useTeamStore').then(({ useTeamStore }) => {
-        useTeamStore.getState().setUCState?.(data)
-      })
+      ss()?.setUCState(data)
+      ts()?.setUCState?.(data)
     })
 
     socket.on(SERVER_EVENTS.UC_QUESTION_UPDATE, (data: UCQuestionUpdatePayload) => {
-      import('./useScreenStore').then(({ useScreenStore }) => {
-        useScreenStore.getState().applyUCQuestionUpdate(data)
-      })
-      import('./useTeamStore').then(({ useTeamStore }) => {
-        useTeamStore.getState().applyUCQuestionUpdate?.(data)
-      })
+      ss()?.applyUCQuestionUpdate(data)
+      ts()?.applyUCQuestionUpdate?.(data)
     })
 
     socket.on(SERVER_EVENTS.UC_TEAM_DONE, (data: UCTeamDonePayload) => {
-      import('./useScreenStore').then(({ useScreenStore }) => {
-        useScreenStore.getState().applyUCTeamDone(data)
-      })
-      import('./useTeamStore').then(({ useTeamStore }) => {
-        useTeamStore.getState().applyUCTeamDone?.(data)
+      ss()?.applyUCTeamDone(data)
+      ts()?.applyUCTeamDone?.(data)
+    })
+
+    socket.on(SERVER_EVENTS.UC_TURN_REVIEW, (_data: UCTurnReviewPayload) => {
+      // Moderator accumulates reviews via their own local listener in moderator-client.tsx.
+      // Screen overlay is NOT triggered here — only UC_REVIEW_SHOW does that.
+    })
+
+    socket.on(SERVER_EVENTS.UC_REVIEW_SHOW, (data: UCTurnReviewPayload) => {
+      ss()?.setUCReviewOverlay(data)
+    })
+
+    socket.on(SERVER_EVENTS.UC_REVIEW_HIDE, () => {
+      ss()?.clearUCReviewOverlay()
+    })
+
+    socket.on(SERVER_EVENTS.UC_AUDIO_PLAY, (data: UCAudioPlayPayload & { sessionId: string }) => {
+      ss()?.setUCAudioPlay({
+        teamId: data.teamId,
+        teamName: data.teamName,
+        teamColor: data.teamColor,
+        sessionId: data.sessionId,
       })
     })
 
     // Clue Reveal specific events
     socket.on(SERVER_EVENTS.CLUE_STATE, (data: ClueStatePayload) => {
-      import('./useScreenStore').then(({ useScreenStore }) => {
-        useScreenStore.getState().setClueState(data)
-      })
-      import('./useTeamStore').then(({ useTeamStore }) => {
-        useTeamStore.getState().setClueState?.(data)
-      })
+      ss()?.setClueState(data)
+      ts()?.setClueState?.(data)
     })
 
     socket.on(SERVER_EVENTS.CLUE_NEXT, (data: ClueNextPayload) => {
-      import('./useScreenStore').then(({ useScreenStore }) => {
-        useScreenStore.getState().applyClueNext(data)
-      })
-      import('./useTeamStore').then(({ useTeamStore }) => {
-        useTeamStore.getState().applyClueNext?.(data)
-      })
+      ss()?.applyClueNext(data)
+      ts()?.applyClueNext?.(data)
     })
 
     socket.on(SERVER_EVENTS.CLUE_TIMER_ELAPSED, () => {
@@ -351,36 +301,30 @@ export const useSocketStore = create<SocketStore>((set, get) => ({
     })
 
     socket.on(SERVER_EVENTS.CLUE_ANSWER_RESULT, (data: ClueAnswerResultPayload) => {
-      import('./useScreenStore').then(({ useScreenStore }) => {
-        useScreenStore.getState().applyClueAnswerResult(data)
-      })
-      import('./useTeamStore').then(({ useTeamStore }) => {
-        useTeamStore.getState().applyClueAnswerResult?.(data)
-      })
+      ss()?.applyClueAnswerResult(data)
+      ts()?.applyClueAnswerResult?.(data)
+    })
+
+    socket.on(SERVER_EVENTS.SUDDEN_VICTORY_INTRO, (data: SuddenVictoryIntroPayload) => {
+      ss()?.setSuddenVictoryIntro(data)
+      ts()?.setSuddenVictoryIntro?.(data)
+      au()?.setSuddenVictoryIntro?.(data)
     })
 
     socket.on(SERVER_EVENTS.SCREEN_QR_SHOW, (data: { dataURL: string; url: string; ip: string }) => {
-      import('./useScreenStore').then(({ useScreenStore }) => {
-        useScreenStore.getState().showQROverlay(data)
-      })
+      ss()?.showQROverlay(data)
     })
 
     socket.on(SERVER_EVENTS.SCREEN_QR_HIDE, () => {
-      import('./useScreenStore').then(({ useScreenStore }) => {
-        useScreenStore.getState().hideQROverlay()
-      })
+      ss()?.hideQROverlay()
     })
 
     socket.on(SERVER_EVENTS.RULES_OVERLAY_SHOW, (data: { roundName?: string | null; rules: string[] }) => {
-      import('./useScreenStore').then(({ useScreenStore }) => {
-        useScreenStore.getState().showRulesOverlay(data)
-      })
+      ss()?.showRulesOverlay(data)
     })
 
     socket.on(SERVER_EVENTS.RULES_OVERLAY_HIDE, () => {
-      import('./useScreenStore').then(({ useScreenStore }) => {
-        useScreenStore.getState().hideRulesOverlay()
-      })
+      ss()?.hideRulesOverlay()
     })
 
     socket.on(SERVER_EVENTS.ERROR, (data: ErrorPayload) => {

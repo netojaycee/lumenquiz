@@ -5,7 +5,7 @@ import { useSessionId } from '@/hooks/useSessionId'
 import Link from 'next/link'
 import {
   ArrowLeft, RefreshCw, Users, Wifi, WifiOff,
-  Loader2, AlertCircle, Trophy, Radio, Copy, Check
+  Loader2, AlertCircle, Trophy, Radio, Copy, Check, ShieldAlert
 } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { Button } from '@/components/ui/button'
@@ -71,6 +71,11 @@ export function LiveClient(): React.ReactElement {
   // Scores from live socket events
   const [liveScores, setLiveScores] = useState<Record<string, number>>({})
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // Reset team slot
+  const [resetSlotTeamId, setResetSlotTeamId] = useState<string | null>(null)
+  const [resetSlotResult, setResetSlotResult] = useState<Record<string, string>>({}) // teamId → new join code
+  const [copiedSlotTeamId, setCopiedSlotTeamId] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     if (sessionId === '_') return
@@ -141,6 +146,28 @@ export function LiveClient(): React.ReactElement {
     setOverrideAdj('')
     setOverrideReason('')
     setOverrideOpen(true)
+  }
+
+  async function handleResetSlot(teamId: string) {
+    setResetSlotTeamId(teamId)
+    try {
+      const result = await api.post<{ teamId: string; newJoinCode: string }>(
+        `/sessions/${sessionId}/teams/${teamId}/reset-slot`,
+        {},
+      )
+      setResetSlotResult((prev) => ({ ...prev, [teamId]: result.newJoinCode }))
+      setTimeout(load, 300)
+    } catch {
+      // silently ignore — host can retry
+    } finally {
+      setResetSlotTeamId(null)
+    }
+  }
+
+  async function copyNewCode(teamId: string, code: string) {
+    await navigator.clipboard.writeText(code)
+    setCopiedSlotTeamId(teamId)
+    setTimeout(() => setCopiedSlotTeamId(null), 2000)
   }
 
   // ─── Render ─────────────────────────────────────────────────────────────────
@@ -250,16 +277,52 @@ export function LiveClient(): React.ReactElement {
               <Radio className="h-4 w-4 text-text-muted" />
               <span className="text-text-muted text-xs font-medium uppercase tracking-wider">Teams</span>
             </div>
-            <div className="space-y-1.5">
-              {sessionTeams.map((st) => (
-                <div key={st.teamId} className="flex items-center gap-2">
-                  <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: st.team?.color ?? '#666' }} />
-                  <span className="text-white text-sm truncate">{st.team?.name ?? 'Team'}</span>
-                  {st.connected
-                    ? <Wifi className="h-3 w-3 text-correct ml-auto flex-shrink-0" />
-                    : <WifiOff className="h-3 w-3 text-wrong ml-auto flex-shrink-0" />}
-                </div>
-              ))}
+            <div className="space-y-2">
+              {sessionTeams.map((st) => {
+                const newCode = resetSlotResult[st.teamId]
+                return (
+                  <div key={st.teamId} className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: st.team?.color ?? '#666' }} />
+                      <span className="text-white text-sm truncate flex-1">{st.team?.name ?? 'Team'}</span>
+                      {st.connected
+                        ? <Wifi className="h-3 w-3 text-correct flex-shrink-0" />
+                        : (
+                          <div className="flex items-center gap-1.5 ml-auto">
+                            <WifiOff className="h-3 w-3 text-wrong flex-shrink-0" />
+                            <button
+                              onClick={() => handleResetSlot(st.teamId)}
+                              disabled={resetSlotTeamId === st.teamId}
+                              title="Reset team slot — clears device binding and generates a new join code"
+                              className="flex items-center gap-1 text-[10px] text-text-muted hover:text-amber-400 transition-colors disabled:opacity-50"
+                            >
+                              {resetSlotTeamId === st.teamId
+                                ? <Loader2 className="h-3 w-3 animate-spin" />
+                                : <ShieldAlert className="h-3 w-3" />}
+                              Reset
+                            </button>
+                          </div>
+                        )}
+                    </div>
+                    {/* Show new join code after slot reset so host can give it to the team */}
+                    {newCode && (
+                      <div className="flex items-center gap-2 pl-4 text-[11px]">
+                        <span className="text-amber-400 font-mono tracking-widest font-bold">{newCode}</span>
+                        <button
+                          onClick={() => copyNewCode(st.teamId, newCode)}
+                          className="text-text-muted hover:text-white transition-colors"
+                          title="Copy new join code"
+                        >
+                          {copiedSlotTeamId === st.teamId
+                            ? <Check className="h-3 w-3 text-correct" />
+                            : <Copy className="h-3 w-3" />}
+                        </button>
+                        <span className="text-text-muted">new code — give to team</span>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
               {sessionTeams.length === 0 && <p className="text-text-muted text-sm">No teams</p>}
             </div>
           </div>

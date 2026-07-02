@@ -8,6 +8,7 @@ import {
   ConnectedSocket,
   MessageBody,
 } from '@nestjs/websockets'
+import { randomBytes } from 'crypto'
 import { Server, Socket } from 'socket.io'
 import { PrismaService } from '../prisma/prisma.service'
 import { AuthService } from '../auth/auth.service'
@@ -17,6 +18,7 @@ import {
   type CachedRound,
   type CachedTeamScore,
 } from './session-cache'
+import { ucAudioStore } from '../session/session.controller'
 import { mapPrismaQuestion, type PrismaQuestionWithOptions } from './question-mapper'
 import {
   SERVER_EVENTS,
@@ -64,6 +66,7 @@ interface JoinPayload {
   role: UserRole
   sessionId?: string
   teamCode?: string // single join credential for team role
+  deviceToken?: string // device-binding token returned on first team join
   teamId?: string
   pin?: string
   audienceId?: string
@@ -86,6 +89,12 @@ function getStrategy(gameMode: string): GameModeStrategy {
   // Phase 2 modes: fall back to blitz scoring until implemented
   return blitzMode
 }
+
+// ─── Vote broadcast throttle ──────────────────────────────────────────────────
+// Prevents a broadcast storm when many audience members vote within the same
+// short window (common at the start of a vote). Max one broadcast per 400 ms
+// per session; the final tally is always flushed when the timer fires.
+const voteThrottleTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 // ─── Gateway ──────────────────────────────────────────────────────────────────
 
@@ -181,7 +190,7 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
         })
         return
       }
-      await this.joinAsTeamByCode(client, payload.teamCode)
+      await this.joinAsTeamByCode(client, payload.teamCode, payload.deviceToken)
       return
     }
 
@@ -197,7 +206,7 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     const session = (await this.prisma.session.findFirst({
       where: { OR: [{ id: sessionId }, { sessionCode: upper }] },
       include: {
-        quiz: { select: { id: true, defaultAudienceLevel: true } },
+        quiz: { select: { id: true, defaultAudienceLevel: true, status: true } },
         sessionTeams: {
           include: {
             team: {
@@ -220,11 +229,12 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     const resolvedSessionId = session.id
     await this.ensureCache(session)
 
-    // Block audience from joining before the host starts the session
-    if (role === UserRole.AUDIENCE && session.status === 'pending') {
+    // Block everyone from joining until the host launches the quiz.
+    // To the outside world the session does not exist yet — give a generic message.
+    if (session.status === 'pending' || session.quiz?.status === 'draft') {
       client.emit(SERVER_EVENTS.ERROR, {
-        code: 'SESSION_NOT_STARTED',
-        message: 'Quiz has not started yet — please wait for the host to open the session',
+        code: 'QUIZ_NOT_STARTED',
+        message: 'This quiz is not available yet. Please wait for your host to start the session.',
       })
       return
     }
@@ -246,7 +256,7 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
   // ─── Join helpers ─────────────────────────────────────────────────────────────
 
-  private async joinAsTeamByCode(client: Socket, teamCode: string): Promise<void> {
+  private async joinAsTeamByCode(client: Socket, teamCode: string, deviceToken?: string): Promise<void> {
     const tc = teamCode.toUpperCase()
 
     const team = await this.prisma.team.findUnique({
@@ -256,13 +266,17 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     if (!team) {
       client.emit(SERVER_EVENTS.ERROR, {
         code: 'INVALID_JOIN_CODE',
-        message: 'Invalid team join code',
+        message: 'Invalid team join code. Check the code and try again.',
       })
       return
     }
 
     const session = await this.prisma.session.findFirst({
-      where: { quizId: team.quizId, status: { notIn: ['completed', 'pending'] } },
+      where: {
+        quizId: team.quizId,
+        status: { notIn: ['completed', 'pending'] },
+        quiz: { status: { not: 'draft' } },
+      },
       orderBy: { createdAt: 'desc' },
       include: {
         quiz: { select: { id: true, defaultAudienceLevel: true } },
@@ -281,8 +295,8 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     })
     if (!session) {
       client.emit(SERVER_EVENTS.ERROR, {
-        code: 'NO_ACTIVE_SESSION',
-        message: 'No active session for this team',
+        code: 'QUIZ_NOT_STARTED',
+        message: 'This quiz has not started yet. Please wait for your host to launch the session.',
       })
       return
     }
@@ -291,12 +305,60 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     if (!st) {
       client.emit(SERVER_EVENTS.ERROR, {
         code: 'TEAM_NOT_IN_SESSION',
-        message: 'Team is not in the current session',
+        message: 'Team is not part of this session.',
       })
       return
     }
 
+    // ── Device token check ──────────────────────────────────────────────────────
+    // If the slot has been claimed, only the device that holds the matching token
+    // is allowed in. Any other device (including no token) is rejected so that
+    // impostors cannot displace the real team mid-quiz.
+    let grantedToken: string
+    if (st.deviceToken) {
+      if (!deviceToken || deviceToken !== st.deviceToken) {
+        client.emit(SERVER_EVENTS.ERROR, {
+          code: 'TEAM_SLOT_CLAIMED',
+          message: 'This team has already joined from another device. Ask your host to reset the slot if you need to reconnect.',
+        })
+        return
+      }
+      // Same device reconnecting — re-use the existing token
+      grantedToken = st.deviceToken
+    } else {
+      // First claim — mint a new token and bind it to this device
+      grantedToken = randomBytes(32).toString('hex')
+      await this.prisma.sessionTeam.updateMany({
+        where: { teamId: team.id, sessionId: session.id },
+        data: { deviceToken: grantedToken },
+      })
+    }
+
     await this.ensureCache(session)
+
+    // If this socket was already registered as a different team (e.g. user pressed logout
+    // then joined again without a real socket disconnect), clean up the old membership so the
+    // projector doesn't show a ghost "connected" indicator for the previous team.
+    const prev = client.data as SocketData | undefined
+    if (prev?.role === UserRole.TEAM && prev.teamId && prev.teamId !== team.id) {
+      void client.leave(`team:${prev.teamId}`)
+      if (prev.sessionId && prev.sessionId !== session.id) {
+        void client.leave(`session:${prev.sessionId}`)
+        void client.leave(`session:${prev.sessionId}:teams`)
+      }
+      void this.prisma.sessionTeam
+        .updateMany({
+          where: { teamId: prev.teamId, sessionId: prev.sessionId },
+          data: { connected: false, socketId: null },
+        })
+        .catch(() => undefined)
+      const prevCache = activeSessions.get(prev.sessionId ?? '')
+      if (prevCache) prevCache.connectedTeamIds.delete(prev.teamId)
+      this.server
+        .to(`session:${prev.sessionId}`)
+        .emit('team:disconnected', { teamId: prev.teamId })
+    }
+
     ;(client.data as SocketData) = { role: UserRole.TEAM, sessionId: session.id, teamId: team.id }
     await client.join([`session:${session.id}`, `session:${session.id}:teams`, `team:${team.id}`])
     await this.prisma.sessionTeam.updateMany({
@@ -312,11 +374,38 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       name: team.name,
       color: team.color,
       sessionId: session.id,
+      deviceToken: grantedToken,
     })
     client.emit(SERVER_EVENTS.SESSION_STATE, this.buildStateSnapshot(session.id))
     this.server
       .to(`session:${session.id}`)
       .emit('team:connected', { teamId: team.id, teamName: team.name })
+  }
+
+  // ─── team:logout — client signals intentional departure ─────────────────────
+  // Clears the device token so the team can re-join fresh (with the same or a new
+  // device) without needing a host slot reset.
+
+  @SubscribeMessage(TEAM_EVENTS.LOGOUT)
+  async handleTeamLogout(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { teamId: string; sessionId: string },
+  ): Promise<void> {
+    const { teamId, sessionId } = payload ?? {}
+    if (!teamId || !sessionId) return
+
+    await this.prisma.sessionTeam
+      .updateMany({
+        where: { teamId, sessionId },
+        data: { deviceToken: null, connected: false, socketId: null },
+      })
+      .catch(() => undefined)
+
+    const cache = activeSessions.get(sessionId)
+    if (cache) cache.connectedTeamIds.delete(teamId)
+
+    this.server.to(`session:${sessionId}`).emit('team:disconnected', { teamId })
+    client.emit('team:logged:out', { ok: true })
   }
 
   private async joinAsModerator(
@@ -399,18 +488,20 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       `audience:${audienceId}`,
     ])
 
-    // Tell the client their audienceId so they can persist it to localStorage
-    client.emit(JOIN_EVENTS.AUDIENCE_JOINED, { audienceId, sessionId })
-    client.emit(SERVER_EVENTS.SESSION_STATE, this.buildStateSnapshot(sessionId))
-
-    // Restore personal points for reconnecting members so their score survives a page reload
+    // Fetch personal points before emitting state so the audience member's score
+    // is restored atomically in a single event — avoids the race where a separate
+    // AUDIENCE_POINTS_UPDATE fires before the dynamic store import resolves.
     const memberPoints = await this.prisma.audienceMember.findUnique({
       where: { id: audienceId },
       select: { totalPoints: true },
     })
-    if (memberPoints && memberPoints.totalPoints > 0) {
-      client.emit(SERVER_EVENTS.AUDIENCE_POINTS_UPDATE, { pointsEarned: 0, totalPoints: memberPoints.totalPoints })
-    }
+
+    // Tell the client their audienceId so they can persist it to localStorage
+    client.emit(JOIN_EVENTS.AUDIENCE_JOINED, { audienceId, sessionId })
+    client.emit(SERVER_EVENTS.SESSION_STATE, {
+      ...this.buildStateSnapshot(sessionId),
+      personalTotalPoints: memberPoints?.totalPoints ?? 0,
+    })
 
     const cache = activeSessions.get(sessionId)
     if (cache && !alreadyCounted) {
@@ -431,6 +522,16 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
   // ─── Moderator: audience vote ─────────────────────────────────────────────────
 
+  // ─── session:leave — explicit client-initiated disconnect ────────────────────
+  // Fired by the frontend when a user clicks "logout". Runs the same cleanup as a
+  // physical socket disconnect so the projector immediately removes the team indicator
+  // without waiting for the next heartbeat timeout (up to 30 s on poor networks).
+  @SubscribeMessage(CONNECTION_EVENTS.LEAVE)
+  async handleSessionLeave(@ConnectedSocket() client: Socket): Promise<void> {
+    await this.handleDisconnect(client)
+    ;(client.data as SocketData) = {} as SocketData
+  }
+
   @SubscribeMessage(MODERATOR_EVENTS.VOTE_OPEN)
   handleVoteOpen(
     @ConnectedSocket() client: Socket,
@@ -447,6 +548,7 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
     cache.status = SessionStatus.AUDIENCE_VOTE
     cache.audienceVoteTally = {}
+    cache.audienceVotePositionTally = {}
     void this.prisma.session.update({ where: { id: sessionId }, data: { status: 'audience_vote' } })
 
     this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.ROUND_VOTE_OPEN, {
@@ -468,6 +570,13 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
     cache.status = SessionStatus.LOBBY
     void this.prisma.session.update({ where: { id: sessionId }, data: { status: 'lobby' } })
+
+    // Flush any pending throttle timer so the final tally is included in the close event
+    const pendingTimer = voteThrottleTimers.get(sessionId)
+    if (pendingTimer) {
+      clearTimeout(pendingTimer)
+      voteThrottleTimers.delete(sessionId)
+    }
 
     const totalVotes = Object.values(cache.audienceVoteTally).reduce((s, v) => s + v, 0)
     this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.ROUND_VOTE_CLOSE, {
@@ -692,6 +801,11 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
         // ⏱ Timer (single active team at a time)
         timerDeadline: 0,
         timerHandle: null,
+
+        // 📝 Review tracking
+        originalQueues: new Map(),
+        turnCorrectIds: new Map(),
+        turnReviews: new Map(),
       }
 
       cache.tileBlitz = undefined
@@ -857,6 +971,24 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
           })
         }
       }
+    } else if (cache.suddenVictory) {
+      // SV: only tied teams are expected to answer
+      for (const tid of cache.suddenVictory.tiedTeamIds) {
+        if (!answeredTeamIds.has(tid)) {
+          const ts = cache.teamScores.get(tid)
+          if (ts) {
+            teamAnswers.push({
+              teamId: tid,
+              teamName: ts.teamName,
+              teamColor: ts.teamColor,
+              submittedAnswer: '',
+              isCorrect: false,
+              pointsEarned: 0,
+              timeRemaining: 0,
+            })
+          }
+        }
+      }
     } else if (!isClueReveal) {
       // Blitz and other simultaneous modes: all teams are expected to answer
       for (const [tid, ts] of cache.teamScores) {
@@ -882,7 +1014,8 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       correctAnswer: question.correctAnswer,
       teamAnswers,
       updatedScores: scores,
-      isLastQuestion: isTileBlitz ? isLastTileBlitzTurn : isLastQuestion,
+      isLastQuestion: cache.suddenVictory ? true : (isTileBlitz ? isLastTileBlitzTurn : isLastQuestion),
+      isSuddenVictory: !!cache.suddenVictory,
     })
 
     this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.SCORES_UPDATE, { scores })
@@ -893,6 +1026,24 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       question.id,
       dbAnswers.map((a) => ({ teamId: a.teamId, isCorrect: a.isCorrect })),
     )
+
+    // Sudden Victory: notify moderator to declare winner; skip normal round flow
+    if (cache.suddenVictory) {
+      const svTeamIds = cache.suddenVictory.tiedTeamIds
+      client.emit(SERVER_EVENTS.SV_READY_DECLARE, {
+        sessionId,
+        tiedTeams: svTeamIds.map((tid) => {
+          const ts = cache.teamScores.get(tid)
+          return {
+            teamId: tid,
+            teamName: ts?.teamName ?? '',
+            teamColor: ts?.teamColor ?? '',
+            score: ts?.score ?? 0,
+          }
+        }),
+      })
+      return
+    }
 
     if (isEndOfFlow) {
       cache.status = SessionStatus.QUESTION_SUMMARY
@@ -1099,6 +1250,7 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     cache.currentQuestionIndex = 0
     cache.submittedTeams = new Set()
     cache.audienceVoteTally = {}
+    cache.audienceVotePositionTally = {}
 
     void this.prisma.session.update({ where: { id: sessionId }, data: { status: 'lobby' } })
 
@@ -1125,8 +1277,144 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     const cache = activeSessions.get(sessionId)
     if (!cache) return
 
-    cache.status = SessionStatus.SESSION_END
+    // Tie check — only run before any Sudden Victory has been played
+    if (!cache.suddenVictory) {
+      const scores = this.scoresArray(cache)
+      const topScore = scores[0]?.score ?? 0
+      const tiedAtTop = scores.filter((s) => s.score === topScore)
+      if (tiedAtTop.length > 1) {
+        const svQuestion = await this.pickSVQuestion(cache.quizId)
+        client.emit(SERVER_EVENTS.TIE_DETECTED, {
+          tiedTeams: tiedAtTop.map((s) => ({
+            teamId: s.teamId,
+            teamName: s.teamName,
+            teamColor: s.teamColor,
+            score: s.score,
+          })),
+          topScore,
+          hasEligibleQuestion: svQuestion !== null,
+        })
+        return
+      }
+    }
 
+    await this.doSessionEnd(sessionId, cache)
+  }
+
+  // ─── Moderator: force end (skip tie check, used after SV or by choice) ────────
+
+  @SubscribeMessage(MODERATOR_EVENTS.FORCE_END)
+  async handleForceEnd(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { sessionId: string },
+  ): Promise<void> {
+    if (!this.isModerator(client)) return
+    const { sessionId } = payload ?? {}
+    const cache = activeSessions.get(sessionId)
+    if (!cache) return
+    await this.doSessionEnd(sessionId, cache)
+  }
+
+  // ─── Moderator: start Sudden Victory round ────────────────────────────────────
+
+  @SubscribeMessage(MODERATOR_EVENTS.START_SUDDEN_VICTORY)
+  async handleStartSuddenVictory(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { sessionId: string },
+  ): Promise<void> {
+    if (!this.isModerator(client)) return
+    const { sessionId } = payload ?? {}
+    const cache = activeSessions.get(sessionId)
+    if (!cache) return
+
+    const question = await this.pickSVQuestion(cache.quizId)
+    if (!question) {
+      client.emit(SERVER_EVENTS.ERROR, {
+        code: 'NO_SV_QUESTION',
+        message: 'No eligible MCQ questions found for Sudden Victory',
+      })
+      return
+    }
+
+    const scores = this.scoresArray(cache)
+    const topScore = scores[0]?.score ?? 0
+    const tiedTeams = scores.filter((s) => s.score === topScore)
+    const tiedTeamIds = tiedTeams.map((s) => s.teamId)
+
+    cache.suddenVictory = { tiedTeamIds, question, timerHandle: null }
+    cache.status = SessionStatus.SUDDEN_VICTORY_INTRO
+
+    this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.SUDDEN_VICTORY_INTRO, {
+      tiedTeams: tiedTeams.map((s) => ({
+        teamId: s.teamId,
+        teamName: s.teamName,
+        teamColor: s.teamColor,
+        score: s.score,
+      })),
+      questionCount: 1,
+    })
+  }
+
+  // ─── Moderator: launch the Sudden Victory question ────────────────────────────
+
+  @SubscribeMessage(MODERATOR_EVENTS.LAUNCH_SV_QUESTION)
+  handleLaunchSVQuestion(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { sessionId: string },
+  ): void {
+    if (!this.isModerator(client)) return
+    const { sessionId } = payload ?? {}
+    const cache = activeSessions.get(sessionId)
+    if (!cache || !cache.suddenVictory || cache.status !== SessionStatus.SUDDEN_VICTORY_INTRO) return
+
+    const { question, tiedTeamIds } = cache.suddenVictory
+    const durationMs = 20_000
+    const startTime = Date.now()
+    const deadline = startTime + durationMs
+
+    cache.status = SessionStatus.QUESTION_OPEN
+    cache.currentRoundQuestions = [question]
+    cache.currentQuestionIndex = 0
+    cache.submittedTeams = new Set()
+    cache.questionStartTime = startTime
+    cache.timerDeadline = deadline
+    cache.timerDurationMs = durationMs
+    cache.pausedAt = null
+
+    cache.suddenVictory.timerHandle = setTimeout(() => {
+      if (cache.status !== SessionStatus.QUESTION_OPEN) return
+      this.lockQuestion(sessionId, cache)
+      this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.QUESTION_TIMER_ELAPSED)
+    }, durationMs)
+
+    this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.QUESTION_OPEN, {
+      questionId: question.id,
+      question,
+      startTime,
+      durationMs,
+      questionIndex: 0,
+      totalQuestions: 1,
+      isSuddenVictory: true,
+      suddenVictoryTeamIds: tiedTeamIds,
+    })
+  }
+
+  // ─── Helper: pick a random MCQ question from the quiz for Sudden Victory ──────
+
+  private async pickSVQuestion(quizId: string): Promise<Question | null> {
+    const dbQuestions = await this.prisma.question.findMany({
+      where: { round: { quizId }, type: 'mcq', deletedAt: null },
+      include: { options: true },
+    })
+    if (dbQuestions.length === 0) return null
+    const pick = dbQuestions[Math.floor(Math.random() * dbQuestions.length)]
+    return mapPrismaQuestion(pick as PrismaQuestionWithOptions)
+  }
+
+  // ─── Helper: shared session-end finalisation ──────────────────────────────────
+
+  private async doSessionEnd(sessionId: string, cache: SessionCache): Promise<void> {
+    cache.status = SessionStatus.SESSION_END
     const finalScores = this.scoresArray(cache)
     const leaderboard = await this.audienceLeaderboard(sessionId, 50)
     const highlights = await this.computeHighlights(sessionId)
@@ -1136,10 +1424,7 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       data: { status: 'session_end', endedAt: new Date() },
     })
     void this.prisma.quiz
-      .update({
-        where: { id: cache.quizId },
-        data: { status: 'completed' },
-      })
+      .update({ where: { id: cache.quizId }, data: { status: 'completed' } })
       .catch(() => undefined)
 
     const correctInteractions = await this.prisma.audienceInteraction.count({
@@ -1162,7 +1447,6 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       },
     })
 
-    // Evict cache after a grace period so late-joining clients still get state
     setTimeout(() => activeSessions.delete(sessionId), 5 * 60 * 1000)
   }
 
@@ -1245,9 +1529,12 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     const validQuestionStatus =
       cache.status === SessionStatus.QUESTION_OPEN || isLocked
     if (!isBonusAnswering && !isClueAnswering && !validQuestionStatus) return
-    // Accept answers up to 2 s after deadline to cover auto-submit arriving after server locks
+    // Accept answers with a grace window to account for network round-trip time:
+    // - QUESTION_OPEN: 500 ms for internet latency (team submits "in time" but packet arrives late)
+    // - QUESTION_LOCKED: 2 s for auto-submit code running after the timer elapsed event
+    const NETWORK_GRACE_MS = 500
     const LATE_GRACE_MS = 2000
-    const deadline = cache.timerDeadline + (isLocked ? LATE_GRACE_MS : 0)
+    const deadline = cache.timerDeadline + (isLocked ? LATE_GRACE_MS : NETWORK_GRACE_MS)
     if (!isBonusAnswering && !isClueAnswering && serverTs > deadline) return
 
     // Clue Reveal: only the buzzing team can submit
@@ -1275,14 +1562,37 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
         )
           return
         tb.pendingAnswer = answer
+        const bonusTd = cache.teamScores.get(teamId)
+        this.server
+          .to(`session:${sessionId}:moderator`)
+          .emit(SERVER_EVENTS.TILEBLITZ_PENDING_ANSWER, {
+            teamId,
+            teamName: bonusTd?.teamName ?? teamId,
+            teamColor: bonusTd?.teamColor ?? '#888',
+            answer,
+            isBonus: true,
+          })
         return
       }
 
       const activeTeamId = tb.turnOrderTeamIds[tb.currentTurnIndex]
       if (teamId !== activeTeamId) return // not your turn
       tb.pendingAnswer = answer
+      const activeTd = cache.teamScores.get(teamId)
+      this.server
+        .to(`session:${sessionId}:moderator`)
+        .emit(SERVER_EVENTS.TILEBLITZ_PENDING_ANSWER, {
+          teamId,
+          teamName: activeTd?.teamName ?? teamId,
+          teamColor: activeTd?.teamColor ?? '#888',
+          answer,
+          isBonus: false,
+        })
       return // do not score yet; answer is provisional until lock
     }
+
+    // During Sudden Victory, only tied teams may submit
+    if (cache.suddenVictory && !cache.suddenVictory.tiedTeamIds.includes(teamId)) return
 
     if (cache.submittedTeams.has(teamId)) return // already submitted (atomic, Blitz only)
 
@@ -1291,7 +1601,8 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     const question = cache.currentRoundQuestions[cache.currentQuestionIndex]
     if (!question || question.id !== questionId) return
 
-    const strategy = getStrategy(round?.gameMode ?? 'blitz')
+    // SV always uses blitz time-decay so point difference is visible
+    const strategy = cache.suddenVictory ? blitzMode : getStrategy(round?.gameMode ?? 'blitz')
 
     const validation = strategy.validateAnswer(answer, question)
     const timeRemainingMs = Math.max(0, cache.timerDeadline - serverTs)
@@ -1342,8 +1653,11 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       td.correctAnswerTimeMs += timeRemainingMs
     }
 
-    // Check if all teams have now submitted
-    if (cache.submittedTeams.size >= cache.teamScores.size) {
+    // During SV only wait for the tied teams; otherwise wait for all teams
+    const expectedSubmissions = cache.suddenVictory
+      ? cache.suddenVictory.tiedTeamIds.length
+      : cache.teamScores.size
+    if (cache.submittedTeams.size >= expectedSubmissions) {
       if (cache.questionTimerHandle) {
         clearTimeout(cache.questionTimerHandle)
         cache.questionTimerHandle = null
@@ -1413,6 +1727,8 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
     const question = cache.currentRoundQuestions[questionIndex]
 
+    // Sync clocks immediately before revealing the question — critical for timer accuracy
+    this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.CLOCK_SYNC, { serverTime: Date.now() })
     // Broadcast tile selection + question to all
     this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.QUESTION_OPEN, {
       questionId,
@@ -1824,10 +2140,15 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     }
 
     const round = cache.rounds[cache.currentRoundIndex]
-    const durationMs = (round?.timerSeconds ?? GAME_CONSTANTS.UC_DEFAULT_TIMER_SECONDS) * 1000
+    const configuredSeconds = round?.timerSeconds ?? GAME_CONSTANTS.UC_DEFAULT_TIMER_SECONDS
+    const durationMs = (configuredSeconds + GAME_CONSTANTS.UC_GRACE_SECONDS) * 1000
 
     // 🎯 Activate team (DO NOT rebuild queue)
     uc.activeTeamId = teamId
+
+    // Snapshot original queue for this team's turn (used for review after turn ends)
+    uc.originalQueues.set(teamId, [...(uc.teamQueues.get(teamId) ?? [])])
+    uc.turnCorrectIds.set(teamId, [])
 
     // ⏱ Start timer
     uc.timerDeadline = Date.now() + durationMs
@@ -1945,6 +2266,14 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       }
     }
 
+    // 📝 Record this question as correctly answered for review
+    const currentQuestion = queue[0]
+    if (currentQuestion) {
+      const correctIds = uc.turnCorrectIds.get(teamId) ?? []
+      correctIds.push(currentQuestion.id)
+      uc.turnCorrectIds.set(teamId, correctIds)
+    }
+
     // 📉 REMOVE QUESTION (core mechanic)
     queue.shift()
 
@@ -1957,11 +2286,13 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     const isQueueEmpty = queue.length === 0
 
     // 🧠 AUTO END TURN IF TEAM FINISHED
+    // endUCTeamTurn already emits UC_STATE internally, so return early to avoid a second emit
     if (isQueueEmpty) {
       await this.endUCTeamTurn(sessionId, cache, 'all_correct')
+      return
     }
 
-    // 📡 FULL STATE SYNC (IMPORTANT — single source of truth)
+    // 📡 FULL STATE SYNC — only reached when more questions remain
     this.server
       .to(`session:${sessionId}`)
       .emit(SERVER_EVENTS.UC_STATE, this.buildUCState(sessionId, cache))
@@ -2059,6 +2390,183 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     const cache = activeSessions.get(sessionId)
     if (!cache || cache.status !== SessionStatus.UC_ACTIVE) return
     await this.endUCTeamTurn(sessionId, cache, 'manual')
+  }
+
+  // ─── Ultimate Challenge: moderator broadcasts a team's review to projector ────
+
+  @SubscribeMessage(MODERATOR_EVENTS.UC_EMIT_REVIEW)
+  handleUCEmitReview(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { sessionId: string; teamId: string },
+  ): void {
+    if (!this.isModerator(client)) return
+    const { sessionId, teamId } = payload ?? {}
+    const cache = activeSessions.get(sessionId)
+    if (!cache) return
+    const review = cache.ultimateChallenge?.turnReviews.get(teamId)
+    if (!review) return
+    // UC_REVIEW_SHOW targets the projector overlay; UC_TURN_REVIEW is for silent moderator accumulation
+    this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.UC_REVIEW_SHOW, review)
+  }
+
+  // ─── Ultimate Challenge: moderator dismisses projector review overlay ─────────
+
+  @SubscribeMessage(MODERATOR_EVENTS.UC_HIDE_REVIEW)
+  handleUCHideReview(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { sessionId: string },
+  ): void {
+    if (!this.isModerator(client)) return
+    const { sessionId } = payload ?? {}
+    this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.UC_REVIEW_HIDE)
+  }
+
+  // ─── Ultimate Challenge: moderator overrides a missed question as correct ─────
+
+  @SubscribeMessage(MODERATOR_EVENTS.UC_OVERRIDE_ANSWER)
+  handleUCOverrideAnswer(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { sessionId: string; teamId: string; questionId: string },
+  ): void {
+    if (!this.isModerator(client)) return
+    const { sessionId, teamId, questionId } = payload ?? {}
+    const cache = activeSessions.get(sessionId)
+    if (!cache) return
+    const uc = cache.ultimateChallenge
+    if (!uc) return
+    const review = uc.turnReviews.get(teamId)
+    if (!review) return
+
+    const q = review.questions.find((x) => x.questionId === questionId)
+    if (!q || q.wasAnswered) return // already correct, nothing to do
+
+    const round = cache.rounds[cache.currentRoundIndex]
+    const pts = round?.pointsPerQuestion ?? GAME_CONSTANTS.UC_DEFAULT_POINTS_PER_CORRECT
+
+    // Update review record
+    q.wasAnswered = true
+    q.pointsEarned = pts
+    review.totalCorrect += 1
+    review.totalPoints += pts
+
+    // Award points to team in live scores
+    const td = cache.teamScores.get(teamId)
+    if (td) {
+      td.score += pts
+      if (cache.currentRoundId) {
+        td.roundScores[cache.currentRoundId] = (td.roundScores[cache.currentRoundId] ?? 0) + pts
+      }
+      // Persist score async
+      void this.prisma.sessionTeam
+        .updateMany({
+          where: { teamId, sessionId },
+          data: { score: td.score, roundScores: JSON.stringify(td.roundScores) },
+        })
+        .catch(() => undefined)
+    }
+
+    // Broadcast updated review + scores
+    this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.UC_TURN_REVIEW, review)
+    this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.SCORES_UPDATE, {
+      scores: this.scoresArray(cache),
+    })
+  }
+
+  // ─── Ultimate Challenge: moderator removes a previously awarded override ──────
+
+  @SubscribeMessage(MODERATOR_EVENTS.UC_REMOVE_OVERRIDE)
+  handleUCRemoveOverride(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { sessionId: string; teamId: string; questionId: string },
+  ): void {
+    if (!this.isModerator(client)) return
+    const { sessionId, teamId, questionId } = payload ?? {}
+    const cache = activeSessions.get(sessionId)
+    if (!cache) return
+    const uc = cache.ultimateChallenge
+    if (!uc) return
+    const review = uc.turnReviews.get(teamId)
+    if (!review) return
+
+    const q = review.questions.find((x) => x.questionId === questionId)
+    if (!q || !q.wasAnswered || q.pointsEarned <= 0) return // nothing to remove
+
+    const pts = q.pointsEarned
+
+    // Revert review record
+    q.wasAnswered = false
+    q.pointsEarned = 0
+    review.totalCorrect = Math.max(0, review.totalCorrect - 1)
+    review.totalPoints = Math.max(0, review.totalPoints - pts)
+
+    // Deduct points from live scores
+    const td = cache.teamScores.get(teamId)
+    if (td) {
+      td.score = Math.max(0, td.score - pts)
+      if (cache.currentRoundId) {
+        td.roundScores[cache.currentRoundId] = Math.max(
+          0,
+          (td.roundScores[cache.currentRoundId] ?? 0) - pts,
+        )
+      }
+      void this.prisma.sessionTeam
+        .updateMany({
+          where: { teamId, sessionId },
+          data: { score: td.score, roundScores: JSON.stringify(td.roundScores) },
+        })
+        .catch(() => undefined)
+    }
+
+    // Broadcast updated review + scores
+    this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.UC_TURN_REVIEW, review)
+    this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.SCORES_UPDATE, {
+      scores: this.scoresArray(cache),
+    })
+  }
+
+  // ─── Ultimate Challenge: team-side skip (active team only) ───────────────────
+
+  @SubscribeMessage(TEAM_EVENTS.UC_SKIP)
+  handleTeamUCSkip(
+    @ConnectedSocket() _client: Socket,
+    @MessageBody() payload: { sessionId: string; teamId: string },
+  ): void {
+    const { sessionId, teamId } = payload ?? {}
+    const cache = activeSessions.get(sessionId)
+    if (!cache || cache.status !== SessionStatus.UC_ACTIVE) return
+
+    const uc = cache.ultimateChallenge
+    if (!uc?.activeTeamId || uc.activeTeamId !== teamId) return // only the active team can skip
+
+    const queue = uc.teamQueues.get(teamId)
+    if (!queue || queue.length === 0) return
+
+    queue.push(queue.shift()!)
+
+    this.server
+      .to(`session:${sessionId}`)
+      .emit(SERVER_EVENTS.UC_STATE, this.buildUCState(sessionId, cache))
+  }
+
+  // ─── Ultimate Challenge: moderator plays a team's audio on the projector ─────
+
+  @SubscribeMessage(MODERATOR_EVENTS.UC_EMIT_AUDIO)
+  handleUCEmitAudio(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { sessionId: string; teamId: string },
+  ): void {
+    if (!this.isModerator(client)) return
+    const { sessionId, teamId } = payload ?? {}
+    const cache = activeSessions.get(sessionId)
+    if (!cache) return
+    const td = cache.teamScores.get(teamId)
+    if (!ucAudioStore.has(`${sessionId}:${teamId}`)) return
+    this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.UC_AUDIO_PLAY, {
+      sessionId,
+      teamId,
+      teamName: td?.teamName ?? teamId,
+      teamColor: td?.teamColor ?? '#888',
+    })
   }
 
   // ─── Clue Reveal: team buzz-in ───────────────────────────────────────────────
@@ -2209,17 +2717,33 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       })
       .catch(() => undefined)
 
-    // Tally — count each #1 pick for the live race-bar
+    // Tally — count each #1 pick for the live race-bar, plus per-position breakdown
     const firstPick = predictedRanking[0]
     if (firstPick) {
       cache.audienceVoteTally[firstPick] = (cache.audienceVoteTally[firstPick] ?? 0) + 1
     }
 
-    const totalVotes = Object.values(cache.audienceVoteTally).reduce((s, v) => s + v, 0)
-    this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.ROUND_VOTE_UPDATE, {
-      tally: cache.audienceVoteTally,
-      totalVotes,
+    // Track full position breakdown: for each team, how many ranked them at each position
+    predictedRanking.forEach((teamId, idx) => {
+      if (!cache.audienceVotePositionTally[teamId]) cache.audienceVotePositionTally[teamId] = {}
+      const pos = idx + 1
+      cache.audienceVotePositionTally[teamId][pos] = (cache.audienceVotePositionTally[teamId][pos] ?? 0) + 1
     })
+
+    // Throttled broadcast: coalesce rapid submissions into at most one update per 400 ms.
+    // The actual tally is already updated in-memory above; the broadcast just sends the snapshot.
+    const existingTimer = voteThrottleTimers.get(sessionId)
+    if (existingTimer) clearTimeout(existingTimer)
+    const timer = setTimeout(() => {
+      voteThrottleTimers.delete(sessionId)
+      const totalVotes = Object.values(cache.audienceVoteTally).reduce((s, v) => s + v, 0)
+      this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.ROUND_VOTE_UPDATE, {
+        tally: cache.audienceVoteTally,
+        positionTally: cache.audienceVotePositionTally,
+        totalVotes,
+      })
+    }, 400)
+    voteThrottleTimers.set(sessionId, timer)
   }
 
   // ─── Audience: per-question prediction ───────────────────────────────────────
@@ -2338,6 +2862,7 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       })
       .catch(() => undefined)
 
+    this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.CLOCK_SYNC, { serverTime: Date.now() })
     this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.QUESTION_OPEN, {
       questionId: question.id,
       question,
@@ -2555,6 +3080,26 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     // 🧠 mark completion if not already
     uc.teamsCompleted.add(teamId)
 
+    // 📝 Build turn review
+    const original = uc.originalQueues.get(teamId) ?? []
+    const correctIdSet = new Set(uc.turnCorrectIds.get(teamId) ?? [])
+    const review = {
+      teamId,
+      teamName: td?.teamName ?? teamId,
+      teamColor: td?.teamColor ?? '#888',
+      questions: original.map((q) => ({
+        questionId: q.id,
+        questionText: q.text,
+        correctAnswer: q.correctAnswer,
+        wasAnswered: correctIdSet.has(q.id),
+        pointsEarned: correctIdSet.has(q.id) ? pointsPerQ : 0,
+      })),
+      totalCorrect: correctCount,
+      totalPoints: pointsEarned,
+      completedAt: Date.now(),
+    }
+    uc.turnReviews.set(teamId, review)
+
     // 📡 emit team finished
     this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.UC_TEAM_DONE, {
       teamId,
@@ -2566,6 +3111,9 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
       isLastTeam: false, // computed below
     })
+
+    // 📡 emit turn review to moderator + screen (moderator stores all, screen displays on demand)
+    this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.UC_TURN_REVIEW, review)
 
     // 📡 scores update
     this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.SCORES_UPDATE, {
@@ -3026,6 +3574,7 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
     return {
       questionId: question?.id ?? null,
+      correctAnswer: question?.correctAnswer ?? null,
       clues: cr.clues,
       currentClueIndex: cr.currentClueIndex,
       currentClueText: cr.clues[cr.currentClueIndex] ?? '',
@@ -3060,7 +3609,26 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       team: { id: string; name: string; color: string; members?: Array<{ id: string; name: string }> }
     }>
   }): Promise<void> {
-    if (activeSessions.has(session.id)) return
+    if (activeSessions.has(session.id)) {
+      // Cache already built — sync in any teams added after the initial build
+      // (e.g. teams added via admin UI after the session was first cached)
+      const cache = activeSessions.get(session.id)!
+      for (const st of session.sessionTeams) {
+        if (!cache.teamScores.has(st.teamId)) {
+          cache.teamScores.set(st.teamId, {
+            sessionTeamId: st.id,
+            teamId: st.teamId,
+            teamName: st.team.name,
+            teamColor: st.team.color,
+            score: st.score,
+            roundScores: JSON.parse(st.roundScores) as Record<string, number>,
+            correctAnswerTimeMs: 0,
+            members: st.team.members ?? [],
+          })
+        }
+      }
+      return
+    }
 
     const rounds = await this.prisma.round.findMany({
       where: { quizId: session.quizId, deletedAt: null },
@@ -3131,6 +3699,7 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       connectedTeamIds: alreadyConnected,
       completedRoundIds: new Set(),
       audienceVoteTally: {},
+      audienceVotePositionTally: {},
       audienceEmojiCount: {},
       audienceLevel:
         ((session as any).quiz?.defaultAudienceLevel as AudienceEngagementLevel) ||
@@ -3331,6 +3900,7 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       completedRoundIds: Array.from(cache.completedRoundIds),
       isLastRound,
       currentRoundId: cache.currentRoundId,
+      serverTime: Date.now(), // clients use this to sync their local clocks
     }
 
     if (round && cache.currentRoundId) {
@@ -3378,8 +3948,13 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       // Include tiebreaker in payload so frontend can display tie context
       tiebreakerMs: t.correctAnswerTimeMs,
     }))
-    // Sort: score DESC, then correctAnswerTimeMs DESC (faster cumulative answers win the tie)
-    arr.sort((a, b) => b.score - a.score || b.tiebreakerMs - a.tiebreakerMs)
+    // Sort: 1) score DESC  2) speed (correctAnswerTimeMs DESC)  3) last-round score DESC
+    const lastRoundId = cache.currentRoundId ?? ''
+    arr.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score
+      if (b.tiebreakerMs !== a.tiebreakerMs) return b.tiebreakerMs - a.tiebreakerMs
+      return (b.roundScores[lastRoundId] ?? 0) - (a.roundScores[lastRoundId] ?? 0)
+    })
     arr.forEach((s, i) => {
       s.rank = i + 1
     })
@@ -3615,71 +4190,71 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       case AudienceActivity.QUESTION_PREDICTION: {
         const pools: Record<string, string[]> = {
           blitz: [
-            'Which team answers this one correctly?',
-            'Who knows the answer?',
-            'Which team is on a roll right now?',
-            'Fastest fingers — who gets it?',
+            'Which team will answer this one correctly?',
+            'Who will get it right?',
+            'Which team will be on the money here?',
+            'Fastest fingers — who will get it?',
             'Pick your winner for this question!',
           ],
           hot_seat: activeTeam
             ? [
-                `Does ${activeTeam.teamName} know the answer?`,
+                `Will ${activeTeam.teamName} know the answer?`,
                 `Can ${activeTeam.teamName} handle the pressure?`,
                 `${activeTeam.teamName} is in the hot seat — will they deliver?`,
               ]
-            : ['Will they get it right?', 'Can they handle the pressure?', 'Under the spotlight — do they know it?'],
+            : ['Will they get it right?', 'Can they handle the pressure?', 'Under the spotlight — will they know it?'],
           tile_blitz: activeTeam
             ? [
                 `Will ${activeTeam.teamName} get this tile?`,
-                `${activeTeam.teamName} is up — do they know it?`,
+                `${activeTeam.teamName} is up — will they know it?`,
                 `Can ${activeTeam.teamName} claim this tile?`,
               ]
             : ['Will they claim this tile?'],
           lightning: [
-            'Speed round — who nails it?',
+            'Speed round — who will nail it?',
             'Lightning fast — pick a team!',
-            'Who keeps their streak alive?',
-            'No hesitation — who answers?',
+            'Who will keep their streak alive?',
+            'No hesitation — who will answer?',
           ],
           wager: [
-            'Which team wagered correctly?',
-            "Who bet on the right answer?",
-            "Bold move — which team's bet pays off?",
+            'Which team will wager correctly?',
+            "Who will bet on the right answer?",
+            "Bold move — which team's bet will pay off?",
           ],
           elimination: [
-            'Who survives this question?',
-            'Which team stays in the game?',
-            'One wrong answer costs everything — who gets it right?',
-            'Life on the line — which team knows it?',
+            'Who will survive this question?',
+            'Which team will stay in the game?',
+            'One wrong answer costs everything — who will get it right?',
+            'Life on the line — which team will know it?',
           ],
         }
         const pool = pools[gameMode] ?? [
-          'Who gets this right?',
+          'Who will get this right?',
           'Pick the winning team!',
-          'Which team knows this one?',
-          'Your prediction — who answers correctly?',
+          'Which team will know this one?',
+          'Your prediction — who will answer correctly?',
         ]
         return pool[qi % pool.length]!
       }
 
       case AudienceActivity.STEAL_PREDICTION: {
         const pool = [
-          'Which team steals the points?',
-          'Who swoops in for the steal?',
-          'Name your thief — who takes it?',
-          'Eyes on the prize — who steals it?',
-          'The points are up for grabs — who wants them?',
+          'Which team will steal the points?',
+          'Who will swoop in for the steal?',
+          'Name your thief — who will take it?',
+          'Eyes on the prize — who will steal it?',
+          'The points are up for grabs — who will want them?',
         ]
         return pool[qi % pool.length]!
       }
 
       case AudienceActivity.DUEL_PREDICTION: {
         const pool = [
-          'Who wins this duel?',
+          'Who will win this duel?',
           'Face to face — pick your champion!',
-          'One will fall — who wins?',
-          'Head to head — who takes the points?',
-          'The clash is on — who comes out on top?',
+          'One will fall — who will win?',
+          'Head to head — who will take the points?',
+          'The clash is on — who will come out on top?',
         ]
         return pool[qi % pool.length]!
       }

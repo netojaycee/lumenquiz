@@ -57,6 +57,7 @@ interface AudienceStore {
   setReveal: (data: QuestionRevealPayload) => void
   setRoundSummary: (data: RoundSummaryPayload) => void
   setSessionEnd: (data: SessionEndPayload) => void
+  setSuddenVictoryIntro?: (data: { tiedTeams: { teamId: string; teamName: string; teamColor: string; score: number }[]; questionCount: number }) => void
   setAudienceInteractionStart: (data: any) => void
   closeAudienceInteraction: () => void
   submitInteraction: (payload?: { predictedTeamId?: string; predictedValue?: number }) => void
@@ -90,11 +91,15 @@ export const useAudienceStore = create<AudienceStore>((set) => ({
   setIdentity: ({ audienceId, sessionId, fullName, fingerprint }) =>
     set({ audienceId, sessionId, fullName, fingerprint }),
 
-  applySessionState: (data) => set({
+  applySessionState: (data) => set((s) => ({
     sessionStatus: data.status,
     audienceCount: data.audienceCount,
     activeInteraction: (data as any).activeInteraction ?? null,
-  }),
+    // Restore personal score atomically with state — server always includes this on join/rejoin
+    totalPoints: (data as any).personalTotalPoints != null
+      ? (data as any).personalTotalPoints
+      : s.totalPoints,
+  })),
 
   setRoundStart: () => set({ sessionStatus: SessionStatus.ROUND_INTRO }),
 
@@ -134,6 +139,8 @@ export const useAudienceStore = create<AudienceStore>((set) => ({
 
   setSessionEnd: (data) => set({ sessionStatus: SessionStatus.SESSION_END, sessionEndData: data }),
 
+  setSuddenVictoryIntro: (_data) => set({ sessionStatus: 'sudden_victory_intro' as SessionStatus }),
+
   setAudienceInteractionStart: (data) => set({
     activeInteraction: {
       ...data,
@@ -144,11 +151,20 @@ export const useAudienceStore = create<AudienceStore>((set) => ({
 
   closeAudienceInteraction: () => set({ activeInteraction: null }),
 
-  submitInteraction: (payload) => set((s) => ({
-    hasSubmittedInteraction: true,
-    hasPredicted: s.activeInteraction?.type === AudienceInteractionType.PREDICTION ? true : s.hasPredicted,
-    predictionTeamId: s.activeInteraction?.type === AudienceInteractionType.PREDICTION ? (payload?.predictedTeamId ?? s.predictionTeamId) : s.predictionTeamId,
-  })),
+  submitInteraction: (payload) => set((s) => {
+    // Determine if this is a prediction submission.
+    // Do NOT rely on s.activeInteraction at call-time — it may already be null if the
+    // AUDIENCE_INTERACTION_CLOSE event arrived just before this action ran (race condition).
+    // A predictedTeamId in the payload is the authoritative signal that this was a prediction.
+    const isPrediction =
+      payload?.predictedTeamId != null ||
+      s.activeInteraction?.type === AudienceInteractionType.PREDICTION
+    return {
+      hasSubmittedInteraction: true,
+      hasPredicted: isPrediction ? true : s.hasPredicted,
+      predictionTeamId: payload?.predictedTeamId ?? s.predictionTeamId,
+    }
+  }),
 
   updatePoints: (data) => set({
     totalPoints: data.totalPoints

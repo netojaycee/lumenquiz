@@ -135,11 +135,24 @@ function BurstParticles({ color }: { color: string }) {
   )
 }
 
+// ─── Size config based on team count ─────────────────────────────────────────
+
+function teamSizeConfig(count: number) {
+  if (count <= 2) return { shield: 110, name: 'text-3xl', avatar: 52, maxMembers: 6 }
+  if (count <= 3) return { shield: 90,  name: 'text-2xl', avatar: 44, maxMembers: 4 }
+  if (count <= 4) return { shield: 72,  name: 'text-xl',  avatar: 38, maxMembers: 3 }
+  return           { shield: 60,  name: 'text-lg',  avatar: 32, maxMembers: 2 }
+}
+
 // ─── Single team card ─────────────────────────────────────────────────────────
 
-function TeamCard({ team, delay }: { team: TeamScore; delay: number }) {
+function TeamCard({ team, delay, cfg }: {
+  team: TeamScore
+  delay: number
+  cfg: ReturnType<typeof teamSizeConfig>
+}) {
   const [burst, setBurst] = useState(false)
-  const members = team.members ?? []
+  const members = (team.members ?? []).slice(0, cfg.maxMembers)
 
   useEffect(() => {
     const t = setTimeout(() => setBurst(true), delay * 1000 + 600)
@@ -148,12 +161,11 @@ function TeamCard({ team, delay }: { team: TeamScore; delay: number }) {
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 80, scale: 0.85 }}
+      initial={{ opacity: 0, y: 60, scale: 0.85 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
       transition={{ delay, type: 'spring', stiffness: 55, damping: 14 }}
-      className="relative flex flex-col items-center gap-5"
+      className="relative flex flex-col items-center gap-4"
     >
-      {/* burst particles on entry */}
       {burst && <BurstParticles color={team.teamColor} />}
 
       {/* Shield */}
@@ -161,47 +173,47 @@ function TeamCard({ team, delay }: { team: TeamScore; delay: number }) {
         animate={{ rotate: [0, -4, 4, -2, 0] }}
         transition={{ delay: delay + 0.5, duration: 0.6, ease: 'easeInOut' }}
       >
-        <TeamShield color={team.teamColor} size={110} />
+        <TeamShield color={team.teamColor} size={cfg.shield} />
       </motion.div>
 
       {/* Team name */}
       <motion.h2
         initial={{ opacity: 0, letterSpacing: '0.5em' }}
-        animate={{ opacity: 1, letterSpacing: '0.08em' }}
+        animate={{ opacity: 1, letterSpacing: '0.06em' }}
         transition={{ delay: delay + 0.3, duration: 0.5 }}
-        className="text-3xl font-black tracking-wide text-white drop-shadow-lg"
-        style={{ textShadow: `0 0 24px ${team.teamColor}88` }}
+        className={`${cfg.name} font-black tracking-wide text-white drop-shadow-lg text-center`}
+        style={{ textShadow: `0 0 20px ${team.teamColor}88` }}
       >
         {team.teamName.toUpperCase()}
       </motion.h2>
 
-      {/* VS divider line */}
+      {/* Colour accent line */}
       <motion.div
         initial={{ scaleX: 0 }}
         animate={{ scaleX: 1 }}
         transition={{ delay: delay + 0.45, duration: 0.4 }}
-        className="h-px w-24 origin-left"
+        className="h-px w-16 origin-center"
         style={{ backgroundColor: team.teamColor, opacity: 0.5 }}
       />
 
       {/* Members */}
       {members.length > 0 && (
-        <div className="flex flex-wrap justify-center gap-3">
+        <div className="flex flex-wrap justify-center gap-2">
           {members.map((m, i) => (
             <motion.div
               key={m.id}
               initial={{ opacity: 0, scale: 0.5 }}
               animate={{ opacity: 1, scale: 1 }}
-              transition={{ delay: delay + 0.5 + i * 0.1, type: 'spring', stiffness: 180 }}
-              className="flex flex-col items-center gap-1.5"
+              transition={{ delay: delay + 0.5 + i * 0.08, type: 'spring', stiffness: 180 }}
+              className="flex flex-col items-center gap-1"
             >
               <div
                 className="rounded-full p-0.5"
                 style={{ boxShadow: `0 0 10px ${team.teamColor}66`, border: `2px solid ${team.teamColor}` }}
               >
-                <PlayerAvatar name={m.name} size={52} avatarUrl={m.avatarUrl} />
+                <PlayerAvatar name={m.name} size={cfg.avatar} avatarUrl={m.avatarUrl} />
               </div>
-              <span className="text-xs font-semibold text-white/80 tracking-wide">
+              <span className="text-[10px] font-semibold text-white/70 tracking-wide">
                 {m.name.split(' ')[0]}
               </span>
             </motion.div>
@@ -214,23 +226,24 @@ function TeamCard({ team, delay }: { team: TeamScore; delay: number }) {
 
 // ─── VS badge between teams ───────────────────────────────────────────────────
 
-function VsBadge({ delay }: { delay: number }) {
+function VsBadge({ delay, size = 'md' }: { delay: number; size?: 'sm' | 'md' | 'lg' }) {
+  const dim = size === 'lg' ? 'h-16 w-16' : size === 'sm' ? 'h-10 w-10' : 'h-13 w-13'
+  const text = size === 'lg' ? 'text-2xl' : size === 'sm' ? 'text-sm' : 'text-lg'
   return (
     <motion.div
       initial={{ opacity: 0, scale: 0 }}
       animate={{ opacity: 1, scale: 1 }}
       transition={{ delay, type: 'spring', stiffness: 80 }}
-      className="flex flex-col items-center justify-center self-center"
+      className="flex-shrink-0 self-center"
     >
       <div className="relative">
-        {/* pulsing glow */}
         <motion.div
-          animate={{ scale: [1, 1.4, 1], opacity: [0.4, 0, 0.4] }}
+          animate={{ scale: [1, 1.4, 1], opacity: [0.35, 0, 0.35] }}
           transition={{ repeat: Infinity, duration: 2, ease: 'easeInOut' }}
           className="absolute inset-0 rounded-full bg-white/20"
         />
-        <div className="relative flex h-14 w-14 items-center justify-center rounded-full border border-white/20 bg-white/5 backdrop-blur-sm">
-          <span className="text-xl font-black text-white/70 tracking-tighter">VS</span>
+        <div className={`relative flex ${dim} items-center justify-center rounded-full border border-white/20 bg-white/5 backdrop-blur-sm`}>
+          <span className={`${text} font-black text-white/70 tracking-tighter`}>VS</span>
         </div>
       </div>
     </motion.div>
@@ -321,33 +334,36 @@ interface RoundIntroScreenProps {
 }
 
 export function RoundIntroScreen({ teams, roundName, roundOrder }: RoundIntroScreenProps) {
+  const count = teams.length
+  const cfg = teamSizeConfig(count)
+
+  // VS badge size
+  const vsSize: 'sm' | 'md' | 'lg' = count <= 2 ? 'lg' : count <= 3 ? 'md' : 'sm'
+
+  // Gap between items — shrinks as more teams are added
+  const gapClass = count <= 2 ? 'gap-12' : count <= 3 ? 'gap-8' : count <= 4 ? 'gap-5' : 'gap-3'
+
   return (
-    <div className="relative flex min-h-screen flex-col items-center justify-between overflow-hidden bg-[#0F0F13] py-10 px-8">
+    <div className="relative flex min-h-screen flex-col items-center justify-between overflow-hidden bg-[#0F0F13] py-10 px-6">
       <AnimatedBackground teams={teams} />
 
       {/* round label */}
       <RoundBadge roundName={roundName} roundOrder={roundOrder} />
 
-      {/* Teams — row for ≤3, 2-col grid for 4+ */}
-      {teams.length <= 3 ? (
-        <div className="relative z-10 flex w-full max-w-6xl items-start justify-around gap-4">
-          {teams.map((team, i) => (
-            <div key={team.teamId} className="flex items-start gap-4">
-              <TeamCard team={team} delay={0.3 + i * 0.4} />
-              {i < teams.length - 1 && <VsBadge delay={0.6 + i * 0.4} />}
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div
-          className="relative z-10 grid w-full max-w-5xl gap-6"
-          style={{ gridTemplateColumns: `repeat(${Math.min(teams.length, 4)}, 1fr)` }}
-        >
-          {teams.map((team, i) => (
-            <TeamCard key={team.teamId} team={team} delay={0.2 + i * 0.25} />
-          ))}
-        </div>
-      )}
+      {/* Teams — flat flex row; TeamCard and VsBadge are direct siblings so VS is truly centred */}
+      <div className={`relative z-10 flex w-full max-w-7xl items-center justify-center ${gapClass}`}>
+        {teams.flatMap((team, i) => {
+          const nodes = [
+            <TeamCard key={team.teamId} team={team} delay={0.25 + i * 0.35} cfg={cfg} />,
+          ]
+          if (i < count - 1) {
+            nodes.push(
+              <VsBadge key={`vs-${i}`} delay={0.5 + i * 0.35} size={vsSize} />,
+            )
+          }
+          return nodes
+        })}
+      </div>
 
       {/* bottom "get ready" pulse */}
       <motion.p

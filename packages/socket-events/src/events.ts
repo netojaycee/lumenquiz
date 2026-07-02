@@ -22,11 +22,16 @@ export const SERVER_EVENTS = {
   TILEBLITZ_BONUS_CLAIMED: 'tileblitz:bonus:claimed',
   TILEBLITZ_BONUS_RESULT: 'tileblitz:bonus:result',
   TILEBLITZ_BONUS_TIMER_ELAPSED: 'tileblitz:bonus:timer:elapsed',
+  TILEBLITZ_PENDING_ANSWER: 'tileblitz:pending:answer',
   CUMULATIVE_SCORES: 'session:cumulative',
   // Ultimate Challenge specific
   UC_STATE: 'uc:state',
   UC_QUESTION_UPDATE: 'uc:question:update',
   UC_TEAM_DONE: 'uc:team:done',
+  UC_TURN_REVIEW: 'uc:turn:review',    // moderator silent accumulation
+  UC_REVIEW_SHOW: 'uc:review:show',    // explicit projector overlay
+  UC_REVIEW_HIDE: 'uc:review:hide',    // dismiss projector overlay
+  UC_AUDIO_PLAY: 'uc:audio:play',
   // Clue Reveal specific
   CLUE_STATE: 'clue:state',
   CLUE_NEXT: 'clue:next',
@@ -36,11 +41,16 @@ export const SERVER_EVENTS = {
   AUDIENCE_INTERACTION_START: 'audience:interaction:start',
   AUDIENCE_INTERACTION_UPDATE: 'audience:interaction:update',
   AUDIENCE_INTERACTION_CLOSE: 'audience:interaction:close',
+  CLOCK_SYNC: 'clock:sync',
   // Screen overlay
   SCREEN_QR_SHOW: 'screen:qr:show',
   SCREEN_QR_HIDE: 'screen:qr:hide',
   RULES_OVERLAY_SHOW: 'round:rules:overlay:show',
   RULES_OVERLAY_HIDE: 'round:rules:overlay:hide',
+  // Sudden Victory tiebreaker
+  TIE_DETECTED: 'sv:tie:detected',
+  SUDDEN_VICTORY_INTRO: 'sv:intro',
+  SV_READY_DECLARE: 'sv:ready:declare',
 } as const
 
 // Client → Server: moderator events
@@ -69,6 +79,11 @@ export const MODERATOR_EVENTS = {
   UC_MARK_CORRECT: 'moderator:uc:mark:correct',
   UC_SKIP: 'moderator:uc:skip',
   UC_END_TURN: 'moderator:uc:end:turn',
+  UC_EMIT_REVIEW: 'moderator:uc:emit:review',
+  UC_HIDE_REVIEW: 'moderator:uc:hide:review',
+  UC_OVERRIDE_ANSWER: 'moderator:uc:override:answer',
+  UC_REMOVE_OVERRIDE: 'moderator:uc:remove:override',
+  UC_EMIT_AUDIO: 'moderator:uc:emit:audio',
   // Clue Reveal specific
   CLUE_REVEAL_NEXT: 'moderator:clue:reveal:next',
   CLUE_SKIP: 'moderator:clue:skip',
@@ -78,6 +93,10 @@ export const MODERATOR_EVENTS = {
   // Screen overlay controls
   SCREEN_QR: 'moderator:screen:qr',
   RULES_TOGGLE: 'moderator:rules:toggle',
+  // Sudden Victory tiebreaker
+  FORCE_END: 'moderator:force:end',
+  START_SUDDEN_VICTORY: 'moderator:sv:start',
+  LAUNCH_SV_QUESTION: 'moderator:sv:launch:question',
 } as const
 
 // Client → Server: team events
@@ -85,6 +104,8 @@ export const TEAM_EVENTS = {
   ANSWER_SUBMIT: 'team:answer:submit',
   TILEBLITZ_BONUS_BUZZ: 'team:tileblitz:bonus:buzz',
   CLUE_BUZZ: 'team:clue:buzz',
+  UC_SKIP: 'team:uc:skip',
+  LOGOUT: 'team:logout',
 } as const
 
 // Client → Server: audience events
@@ -99,6 +120,7 @@ export const AUDIENCE_EVENTS = {
 // Bidirectional connection events
 export const CONNECTION_EVENTS = {
   REJOIN: 'session:rejoin',
+  LEAVE: 'session:leave',
   DISCONNECT: 'disconnect',
   CONNECT: 'connect',
   CONNECT_ERROR: 'connect_error',

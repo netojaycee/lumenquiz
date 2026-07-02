@@ -125,10 +125,10 @@ export function RoundSummaryScreen({
               </div>
 
               {/* total */}
-              <div className="w-24 text-right flex-shrink-0">
+              {/* <div className="w-24 text-right flex-shrink-0">
                 <p className="text-2xl font-black text-white/60 tabular-nums">{s.totalScore}</p>
                 <p className="text-[10px] text-white/30 uppercase tracking-wider">total</p>
-              </div>
+              </div> */}
             </motion.div>
           ))}
         </div>
@@ -144,16 +144,19 @@ export function RoundSummaryScreen({
               transition={{ delay: 0.7 }}
               className="rounded-2xl border border-[#3B82F6]/20 bg-[#3B82F6]/10 p-5"
             >
-              <p className="text-xs font-bold tracking-widest uppercase text-[#3B82F6] mb-3">
-                Audience Accuracy
-              </p>
+              <div className="flex items-start justify-between mb-3">
+                <p className="text-xs font-bold tracking-widest uppercase text-[#3B82F6]">
+                  Audience Predictions
+                </p>
+                <span className="text-[10px] text-white/25 font-medium">just for fun</span>
+              </div>
               <div className="flex items-end gap-3">
                 <span className="text-5xl font-black text-white">
                   {audienceStats.accuracyPercentage}%
                 </span>
                 <div className="mb-1 text-xs text-white/40 leading-tight">
                   {audienceStats.correctInteractions} / {audienceStats.totalInteractions}
-                  <br />correct
+                  <br />got it right
                 </div>
               </div>
               {/* accuracy bar */}

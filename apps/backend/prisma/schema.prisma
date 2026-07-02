@@ -15,6 +15,7 @@ model Quiz {
   date                 DateTime?
   status               String    @default("draft") // draft | ready | active | completed
   defaultAudienceLevel String    @default("medium") // low | medium | high
+  areaName             String?   // Name of the area (e.g. "Lagos East"). Null for global ADMIN quizzes
   createdAt            DateTime  @default(now())
   updatedAt            DateTime  @updatedAt
   deletedAt            DateTime?
@@ -128,6 +129,7 @@ model SessionTeam {
   rank        Int?
   connected   Boolean @default(false)
   socketId    String?
+  deviceToken String? // bound to the first device that claims this slot; null = unclaimed
 
   session Session @relation(fields: [sessionId], references: [id])
   team    Team    @relation(fields: [teamId], references: [id])
@@ -218,3 +220,39 @@ model AudienceInteraction {
 
   member AudienceMember @relation(fields: [memberId], references: [id])
 }
+
+// ─── AUTHENTICATION & MULTI-TENANCY ───────────────────────────────────────────
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String?  // Nullable initially (until setup-password)
+  name      String
+  role      String   // ADMIN | OWNER | MEMBER
+  areaName  String?  // Name of the area (e.g. "Lagos East"). Null for global ADMIN
+  status    String   @default("active") // active | suspended
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Invitation {
+  id        String    @id @default(cuid())
+  email     String    @unique
+  name      String
+  role      String
+  areaName  String?
+  token     String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+}
+
+model PasswordReset {
+  id        String    @id @default(cuid())
+  email     String
+  token     String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+}
+

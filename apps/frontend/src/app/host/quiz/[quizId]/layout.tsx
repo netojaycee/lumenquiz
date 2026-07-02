@@ -5,7 +5,9 @@ import { useQuizId } from '@/hooks/useQuizId'
 import Link from 'next/link'
 import { ArrowLeft, Rocket, Loader2, AlertTriangle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { useHostStore } from '@/stores/useHostStore'
+import { useQuizValidation } from '@/hooks/useQuizValidation'
 import { cn } from '@/lib/utils'
 import { api } from '@/lib/api'
 import { QuizStatus, type Session } from '@apoquiz/shared-types'
@@ -58,10 +60,8 @@ export default function QuizWorkspaceLayout({ children }: { children: React.Reac
     )
   }
 
-  // Compute warnings to decide if launch should be disabled
-  const teamCount  = currentQuiz?.teams?.length ?? 0
-  const roundCount = currentQuiz?.rounds?.length ?? 0
-  const canLaunch  = teamCount > 0 && roundCount > 0 && currentQuiz?.id === quizId
+  const quizForValidation = currentQuiz?.id === quizId ? currentQuiz : null
+  const { warnings, canLaunch } = useQuizValidation(quizForValidation)
 
   async function handleLaunch() {
     setLaunching(true)
@@ -124,16 +124,33 @@ export default function QuizWorkspaceLayout({ children }: { children: React.Reac
                 Continue Live
               </Button>
             ) : (
-              <Button
-                onClick={handleLaunch}
-                disabled={launching || !canLaunch}
-                title={!canLaunch ? 'Add at least one team and one round before launching' : undefined}
-              >
-                {launching
-                  ? <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                  : <Rocket className="h-4 w-4 mr-2" />}
-                Launch Quiz
-              </Button>
+              <TooltipProvider delayDuration={200}>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    {/* span needed so tooltip fires on disabled buttons */}
+                    <span>
+                      <Button
+                        onClick={handleLaunch}
+                        disabled={launching || !canLaunch}
+                      >
+                        {launching
+                          ? <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                          : <Rocket className="h-4 w-4 mr-2" />}
+                        Launch Quiz
+                      </Button>
+                    </span>
+                  </TooltipTrigger>
+                  {!canLaunch && (
+                    <TooltipContent side="bottom" className="max-w-xs text-xs">
+                      <p className="font-semibold mb-1">Fix before launching:</p>
+                      <ul className="list-disc list-inside space-y-0.5">
+                        {warnings.slice(0, 3).map((w, i) => <li key={i}>{w}</li>)}
+                        {warnings.length > 3 && <li>+{warnings.length - 3} more — see Overview tab</li>}
+                      </ul>
+                    </TooltipContent>
+                  )}
+                </Tooltip>
+              </TooltipProvider>
             )}
           </div>
         </div>

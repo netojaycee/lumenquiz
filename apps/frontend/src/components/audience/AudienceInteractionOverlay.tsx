@@ -105,9 +105,12 @@ export function AudienceInteractionOverlay() {
             </div>
           </div>
 
-          <h3 className="mb-4 text-sm leading-tight font-bold text-white">
+          <h3 className="mb-1 text-sm leading-tight font-bold text-white">
             {activeInteraction.prompt}
           </h3>
+          {activeInteraction.type === AudienceInteractionType.PREDICTION && (
+            <p className="mb-4 text-[10px] text-white/25">Just for fun — no points awarded</p>
+          )}
 
           <div className="space-y-3">
             {hasSubmittedInteraction ? (

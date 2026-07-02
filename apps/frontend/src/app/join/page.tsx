@@ -129,7 +129,13 @@ function JoinPageInner(): React.ReactElement {
         const timeout = setTimeout(() => reject(new Error('Connection timed out')), 8000)
 
         function doJoin() {
-          const payload: RejoinPayload = { role: UserRole.TEAM, teamCode: code }
+          const stored = storage.getTeam()
+          const payload: RejoinPayload = {
+            role: UserRole.TEAM,
+            teamCode: code,
+            // send stored token if this device has previously claimed the slot
+            deviceToken: stored?.joinCode === code ? stored.deviceToken : undefined,
+          }
           emit(CONNECTION_EVENTS.REJOIN, payload)
         }
 
@@ -139,7 +145,7 @@ function JoinPageInner(): React.ReactElement {
           socket.once(CONNECTION_EVENTS.CONNECT, doJoin)
         }
 
-        socket.once('team:joined', (data: { teamId: string; name: string; color: string; sessionId: string }) => {
+        socket.once('team:joined', (data: { teamId: string; name: string; color: string; sessionId: string; deviceToken: string }) => {
           clearTimeout(timeout)
           storage.setTeam({
             teamId: data.teamId,
@@ -147,6 +153,7 @@ function JoinPageInner(): React.ReactElement {
             joinCode: code,
             name: data.name,
             color: data.color,
+            deviceToken: data.deviceToken,
           })
           setTeamIdentity({
             teamId: data.teamId,

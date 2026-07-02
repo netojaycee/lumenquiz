@@ -32,6 +32,7 @@ interface TeamStore {
   sessionStatus: SessionStatus | null
   currentRoundId: string | null
   score: number
+  roundScores: Record<string, number>
   rank: number | null
   currentQuestion: Question | null
   timerData: TimerData | null
@@ -59,6 +60,7 @@ interface TeamStore {
   ucState: UCStatePayload | null
   clueState: ClueStatePayload | null
   clueLockedOut: boolean // true if this team is locked out for current clue question
+  suddenVictoryTiedTeamIds: string[]
 
   // actions
   setIdentity: (data: {
@@ -69,7 +71,7 @@ interface TeamStore {
     pin: string
   }) => void
   applySessionState: (data: SessionStatePayload) => void
-  setRoundStart: () => void
+  setRoundStart: (data: { round: { id: string } }) => void
   setCurrentQuestion: (
     data: QuestionOpenPayload & { activeTeamId?: string; isTileBlitz?: boolean },
   ) => void
@@ -93,6 +95,7 @@ interface TeamStore {
 
   applyClueAnswerResult?: (data: ClueAnswerResultPayload) => void
   setAllAnswered: () => void
+  setSuddenVictoryIntro?: (data: { tiedTeams: { teamId: string; teamName: string; teamColor: string; score: number }[]; questionCount: number }) => void
   reset: () => void
 }
 
@@ -105,6 +108,7 @@ const initialState = {
   sessionStatus: null,
   currentRoundId: null as string | null,
   score: 0,
+  roundScores: {} as Record<string, number>,
   rank: null,
   currentQuestion: null,
   timerData: null,
@@ -130,6 +134,7 @@ const initialState = {
   ucState: null,
   clueState: null,
   clueLockedOut: false,
+  suddenVictoryTiedTeamIds: [] as string[],
 }
 
 export const useTeamStore = create<TeamStore>((set, get) => ({
@@ -150,6 +155,7 @@ export const useTeamStore = create<TeamStore>((set, get) => ({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       currentRoundId: (data as any).currentRoundId ?? get().currentRoundId,
       score: myScore?.score ?? get().score,
+      roundScores: myScore?.roundScores ?? get().roundScores,
       rank: myScore?.rank ?? get().rank,
       timerData: data.timerData ?? null,
       bonusTimerStartTime: bonusTimerData?.startTime ?? get().bonusTimerStartTime,
@@ -157,8 +163,8 @@ export const useTeamStore = create<TeamStore>((set, get) => ({
     })
   },
 
-  setRoundStart() {
-    set({ sessionStatus: SessionStatus.ROUND_INTRO })
+  setRoundStart(data) {
+    set({ sessionStatus: SessionStatus.ROUND_INTRO, currentRoundId: data.round.id })
   },
 
   setCurrentQuestion(data) {
@@ -233,6 +239,8 @@ export const useTeamStore = create<TeamStore>((set, get) => ({
   },
 
   applyUCQuestionUpdate(data: UCQuestionUpdatePayload) {
+    const myTeamId = get().teamId
+    const myScore = data.scores.find((s) => s.teamId === myTeamId)
     set((s) => ({
       ucState: s.ucState
         ? {
@@ -242,6 +250,11 @@ export const useTeamStore = create<TeamStore>((set, get) => ({
             correctCount: data.correctCount,
           }
         : s.ucState,
+      ...(myScore ? {
+        score: myScore.score,
+        rank: myScore.rank,
+        roundScores: myScore.roundScores,
+      } : {}),
     }))
   },
 
@@ -323,6 +336,8 @@ export const useTeamStore = create<TeamStore>((set, get) => ({
       revealData: data,
       score:
         data.updatedScores.find((s: TeamScore) => s.teamId === get().teamId)?.score ?? get().score,
+      roundScores:
+        data.updatedScores.find((s: TeamScore) => s.teamId === get().teamId)?.roundScores ?? get().roundScores,
       rank:
         data.updatedScores.find((s: TeamScore) => s.teamId === get().teamId)?.rank ?? get().rank,
     })
@@ -335,6 +350,13 @@ export const useTeamStore = create<TeamStore>((set, get) => ({
 
   setSessionEnd(data) {
     set({ sessionStatus: SessionStatus.SESSION_END, sessionEndData: data })
+  },
+
+  setSuddenVictoryIntro(data) {
+    set({
+      sessionStatus: 'sudden_victory_intro' as SessionStatus,
+      suddenVictoryTiedTeamIds: data.tiedTeams.map((t) => t.teamId),
+    })
   },
 
   reset() {

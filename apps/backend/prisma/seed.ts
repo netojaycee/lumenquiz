@@ -162,8 +162,8 @@ async function main(): Promise<void> {
         teams: {
           create: [
             {
-              name: 'Razaq Rockstars',
-              color: '#EF4444',
+              name: 'Lagos West Area',
+              color: '#5544ef',
               pin: '1111',
               joinCode: randomCode(8),
               members: {
@@ -171,8 +171,8 @@ async function main(): Promise<void> {
               },
             },
             {
-              name: 'Gideon Guardians',
-              color: '#3B82F6',
+              name: 'Abuja Area',
+              color: '#c4f63b',
               pin: '2222',
               joinCode: randomCode(8),
               members: {

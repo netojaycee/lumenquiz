@@ -1,6 +1,7 @@
 'use client'
 import { useEffect, useState } from 'react'
 import { cn } from '@/lib/utils'
+import { serverNow } from '@/lib/clock'
 
 interface TimerBarProps {
   startTime: number
@@ -16,7 +17,7 @@ export function TimerBar({ startTime, durationMs, onElapsed }: TimerBarProps): R
     let done = false
 
     const tick = () => {
-      const remaining = Math.max(0, durationMs - (Date.now() - startTime))
+      const remaining = Math.max(0, durationMs - (serverNow() - startTime))
       setPct((remaining / durationMs) * 100)
       if (remaining <= 0 && !done) {
         done = true
@@ -60,7 +61,7 @@ export function TimerCountdown({
     let done = false
 
     const tick = () => {
-      const rem = Math.max(0, durationMs - (Date.now() - startTime))
+      const rem = Math.max(0, durationMs - (serverNow() - startTime))
       setRemaining(rem)
       if (rem > 0 && !done) raf = requestAnimationFrame(tick)
     }

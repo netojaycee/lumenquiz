@@ -18,6 +18,7 @@ export interface RejoinPayload {
   role: UserRole
   sessionId?: string
   teamCode?: string // single join credential for team role (replaces sessionId + pin)
+  deviceToken?: string // device-binding token received on first team join; sent on every rejoin
   teamId?: string
   pin?: string
   audienceId?: string
@@ -53,6 +54,8 @@ export interface QuestionOpenPayload {
   durationMs: number
   questionIndex: number
   totalQuestions: number
+  isSuddenVictory?: boolean
+  suddenVictoryTeamIds?: string[]
 }
 
 export interface RoundVoteOpenPayload {
@@ -64,6 +67,7 @@ export interface RoundVoteOpenPayload {
 
 export interface RoundVoteUpdatePayload {
   tally: Record<string, number>
+  positionTally?: Record<string, Record<string, number>> // teamId → {position → count}
   totalVotes: number
 }
 
@@ -249,6 +253,14 @@ export interface TileBlitzBonusResultPayload {
   scores: TeamScore[]
 }
 
+export interface TileBlitzPendingAnswerPayload {
+  teamId: string
+  teamName: string
+  teamColor: string
+  answer: string
+  isBonus: boolean
+}
+
 export interface QuestionOpenTileBlitzPayload extends QuestionOpenPayload {
   activeTeamId: string
   isTileBlitz: true
@@ -370,10 +382,63 @@ export interface UCEndTurnPayload {
   sessionId: string
 }
 
+export interface UCTurnReviewQuestion {
+  questionId: string
+  questionText: string
+  correctAnswer: string
+  wasAnswered: boolean
+  pointsEarned: number
+}
+
+export interface UCTurnReviewPayload {
+  teamId: string
+  teamName: string
+  teamColor: string
+  questions: UCTurnReviewQuestion[]
+  totalCorrect: number
+  totalPoints: number
+  completedAt: number
+}
+
+export interface UCEmitReviewPayload {
+  sessionId: string
+  teamId: string
+}
+
+export interface UCOverrideAnswerPayload {
+  sessionId: string
+  teamId: string
+  questionId: string
+}
+
+export interface UCRemoveOverridePayload {
+  sessionId: string
+  teamId: string
+  questionId: string
+}
+
+export interface UCTeamSkipPayload {
+  sessionId: string
+  teamId: string
+}
+
+export interface UCEmitAudioPayload {
+  sessionId: string
+  teamId: string
+}
+
+export interface UCAudioPlayPayload {
+  teamId: string
+  teamName: string
+  teamColor: string
+  // Screen client constructs the full URL from its own API base + sessionId
+}
+
 // ─── Clue Reveal Payloads ──────────────────────────────────────────────────────
 
 export interface ClueStatePayload {
   questionId: string
+  correctAnswer: string | null
   clues: string[]
   currentClueIndex: number // 0-based — how many clues shown so far
   currentClueText: string // the clue currently visible
@@ -455,4 +520,29 @@ export interface AudienceGhostAnswerSubmitPayload {
   sessionId: string
   questionId: string
   answer: string
+}
+
+// ─── Sudden Victory Payloads ──────────────────────────────────────────────────
+
+export interface SVTeamMeta {
+  teamId: string
+  teamName: string
+  teamColor: string
+  score: number
+}
+
+export interface TieDetectedPayload {
+  tiedTeams: SVTeamMeta[]
+  topScore: number
+  hasEligibleQuestion: boolean
+}
+
+export interface SuddenVictoryIntroPayload {
+  tiedTeams: SVTeamMeta[]
+  questionCount: number
+}
+
+export interface SVReadyDeclarePayload {
+  sessionId: string
+  tiedTeams: SVTeamMeta[]
 }

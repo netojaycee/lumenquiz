@@ -19,6 +19,7 @@ import type {
   UCStatePayload,
   UCQuestionUpdatePayload,
   UCTeamDonePayload,
+  UCTurnReviewPayload,
   ClueStatePayload,
   ClueNextPayload,
   ClueAnswerResultPayload,
@@ -58,6 +59,7 @@ interface ScreenStore {
   timerElapsed: boolean
   voteData: RoundVoteOpenPayload | null
   voteTally: Record<string, number>
+  positionTally: Record<string, Record<string, number>>
   totalVotes: number
   voteClosed: boolean
   revealData: QuestionRevealPayload | null
@@ -74,6 +76,9 @@ interface ScreenStore {
   audienceLevel: AudienceEngagementLevel | null
   qrOverlay: { dataURL: string; url: string; ip: string } | null
   rulesOverlay: { roundName?: string | null; rules: string[] } | null
+  suddenVictoryIntroData: { tiedTeams: Array<{ teamId: string; teamName: string; teamColor: string; score: number }>; questionCount: number } | null
+  isSuddenVictoryQuestion: boolean
+  suddenVictoryTeamIds: string[]
   activeInteraction: {
     type: AudienceInteractionType
     activity: AudienceActivity
@@ -116,6 +121,7 @@ interface ScreenStore {
   setClueState: (data: ClueStatePayload) => void
   applyClueNext: (data: ClueNextPayload) => void
   applyClueAnswerResult: (data: ClueAnswerResultPayload) => void
+  setSuddenVictoryIntro: (data: { tiedTeams: Array<{ teamId: string; teamName: string; teamColor: string; score: number }>; questionCount: number }) => void
   setAudienceLevel: (level: AudienceEngagementLevel) => void
   setAudienceInteractionStart: (data: any) => void
   updateAudienceInteraction: (data: any) => void
@@ -124,6 +130,12 @@ interface ScreenStore {
   hideQROverlay: () => void
   showRulesOverlay: (data: { roundName?: string | null; rules: string[] }) => void
   hideRulesOverlay: () => void
+  ucReviewOverlay: UCTurnReviewPayload | null
+  setUCReviewOverlay: (data: UCTurnReviewPayload) => void
+  clearUCReviewOverlay: () => void
+  ucAudioPlay: { teamId: string; teamName: string; teamColor: string; sessionId: string } | null
+  setUCAudioPlay: (data: { teamId: string; teamName: string; teamColor: string; sessionId: string }) => void
+  clearUCAudioPlay: () => void
   reset: () => void
 }
 
@@ -145,6 +157,7 @@ export const useScreenStore = create<ScreenStore>((set) => ({
   timerElapsed: false,
   voteData: null,
   voteTally: {},
+  positionTally: {},
   totalVotes: 0,
   voteClosed: false,
   revealData: null,
@@ -161,7 +174,12 @@ export const useScreenStore = create<ScreenStore>((set) => ({
   audienceLevel: null,
   qrOverlay: null,
   rulesOverlay: null,
+  suddenVictoryIntroData: null,
+  isSuddenVictoryQuestion: false,
+  suddenVictoryTeamIds: [],
   activeInteraction: null,
+  ucReviewOverlay: null,
+  ucAudioPlay: null,
 
   setSessionId: (id) => set({ sessionId: id }),
 
@@ -218,6 +236,8 @@ export const useScreenStore = create<ScreenStore>((set) => ({
     allAnswered: false,
     timerElapsed: false,
     revealData: null,
+    isSuddenVictoryQuestion: (data as any).isSuddenVictory ?? false,
+    suddenVictoryTeamIds: (data as any).suddenVictoryTeamIds ?? s.suddenVictoryTeamIds,
     // Record active team for Tile Blitz
     tileBlitz: data.isTileBlitz && data.activeTeamId
       ? { ...(s.tileBlitz ?? {} as TileBlitzScreenState), activeQuestionTeamId: data.activeTeamId, bonusClaimData: null, bonusResult: null, bonusTimerStartTime: null, bonusTimerDurationMs: null }
@@ -235,16 +255,24 @@ export const useScreenStore = create<ScreenStore>((set) => ({
     sessionStatus: SessionStatus.AUDIENCE_VOTE,
     voteData: data,
     voteTally: {},
+    positionTally: {},
     totalVotes: 0,
     voteClosed: false,
   }),
 
   updateVote: (data) => set({
     voteTally: data.tally,
+    positionTally: data.positionTally ?? {},
     totalVotes: data.totalVotes,
   }),
 
   setVoteClosed: () => set({ sessionStatus: SessionStatus.LOBBY, voteClosed: true }),
+
+  setSuddenVictoryIntro: (data) => set({
+    sessionStatus: SessionStatus.SUDDEN_VICTORY_INTRO,
+    suddenVictoryIntroData: data,
+    suddenVictoryTeamIds: data.tiedTeams.map((t) => t.teamId),
+  }),
 
   setReveal: (data) => set({ sessionStatus: SessionStatus.ANSWER_REVEAL, revealData: data }),
 
@@ -302,9 +330,10 @@ export const useScreenStore = create<ScreenStore>((set) => ({
 
   setUCState: (data) => set((s) => ({
     ucState: data,
-    // sessionStatus: data.activeTeamId ? SessionStatus.UC_ACTIVE : SessionStatus.UC_TEAM_SELECT,
     sessionStatus: data.status,
     scores: data.scores ?? s.scores,
+    // Dismiss the review overlay when a new team goes active
+    ucReviewOverlay: data.status === SessionStatus.UC_ACTIVE ? null : s.ucReviewOverlay,
   })),
 
   applyUCQuestionUpdate: (data) => set((s) => ({
@@ -389,6 +418,11 @@ export const useScreenStore = create<ScreenStore>((set) => ({
 
   showRulesOverlay: (data) => set({ rulesOverlay: data }),
   hideRulesOverlay: () => set({ rulesOverlay: null }),
+
+  setUCReviewOverlay: (data) => set({ ucReviewOverlay: data }),
+  clearUCReviewOverlay: () => set({ ucReviewOverlay: null }),
+  setUCAudioPlay: (data) => set({ ucAudioPlay: data }),
+  clearUCAudioPlay: () => set({ ucAudioPlay: null }),
 
   reset: () => set({
     sessionStatus: null, currentRound: null, roundRules: null, currentQuestion: null,

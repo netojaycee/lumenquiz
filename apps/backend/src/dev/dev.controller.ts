@@ -14,24 +14,24 @@ export class DevController {
   @HttpCode(200)
   async seed(): Promise<{ message: string; quizId: string; sessionCode: string }> {
     // Clean all existing data
-    await this.prisma.audienceInteraction.deleteMany()
-    await this.prisma.audienceTFAnswer.deleteMany()
-    await this.prisma.audienceQuestionPrediction.deleteMany()
-    await this.prisma.audienceRoundPrediction.deleteMany()
-    await this.prisma.audienceMember.deleteMany()
-    await this.prisma.teamAnswer.deleteMany()
-    await this.prisma.sessionTeam.deleteMany()
-    await this.prisma.session.deleteMany()
-    await this.prisma.mCQOption.deleteMany()
-    await this.prisma.question.deleteMany()
-    await this.prisma.round.deleteMany()
-    await this.prisma.teamMember.deleteMany()
-    await this.prisma.team.deleteMany()
-    await this.prisma.quiz.deleteMany()
+    // await this.prisma.audienceInteraction.deleteMany()
+    // await this.prisma.audienceTFAnswer.deleteMany()
+    // await this.prisma.audienceQuestionPrediction.deleteMany()
+    // await this.prisma.audienceRoundPrediction.deleteMany()
+    // await this.prisma.audienceMember.deleteMany()
+    // await this.prisma.teamAnswer.deleteMany()
+    // await this.prisma.sessionTeam.deleteMany()
+    // await this.prisma.session.deleteMany()
+    // await this.prisma.mCQOption.deleteMany()
+    // await this.prisma.question.deleteMany()
+    // await this.prisma.round.deleteMany()
+    // await this.prisma.teamMember.deleteMany()
+    // await this.prisma.team.deleteMany()
+    // await this.prisma.quiz.deleteMany()
 
     const quiz = await this.prisma.quiz.create({
       data: {
-        name: 'Youth Sunday Bible Challenge 2024',
+        name: 'Youth Sunday Bible Challenge 2025',
         description: 'Sample quiz for development',
         defaultAudienceLevel: 'medium',
         teams: {
@@ -51,8 +51,8 @@ export class DevController {
             //   members: { create: [{ name: 'Samuel' }, { name: 'Mike' }] },
             // },
             {
-              name: 'Razaq Rockstars',
-              color: '#EF4444',
+              name: 'Lagos West Area',
+              color: '#4444ef',
               pin: '1111',
               joinCode: randomCode(8),
               members: {
@@ -60,8 +60,8 @@ export class DevController {
               },
             },
             {
-              name: 'Gideon Guardians',
-              color: '#3B82F6',
+              name: 'Abuja Area',
+              color: '#e6f63b',
               pin: '2222',
               joinCode: randomCode(8),
               members: {
@@ -84,8 +84,8 @@ export class DevController {
               order: 1,
               name: 'Opening Round',
               gameMode: 'blitz',
-              questionCount: 4,
-              timerSeconds: 30,
+              questionCount: 3,
+              timerSeconds: 20,
               pointsPerQuestion: 10,
               audienceLevel: 'high',
               questions: {
@@ -394,113 +394,9 @@ export class DevController {
 
             {
               order: 3,
-              name: 'Ultimate Challenge',
-              gameMode: 'ultimate_challenge',
-              questionCount: 3,
-              timerSeconds: 20,
-              pointsPerQuestion: 15,
-              audienceLevel: 'low',
-              questions: {
-                create: [
-                  {
-                    order: 1,
-                    type: 'open',
-                    text: 'Who was the father of Abraham?',
-                    correctAnswer: 'Terah',
-                    aliases: JSON.stringify(['Terah the father of Abram']),
-                    points: 15,
-                    difficulty: 'easy',
-                  },
-                  {
-                    order: 2,
-                    type: 'open',
-                    text: 'How many books are in the New Testament?',
-                    correctAnswer: '27',
-                    aliases: JSON.stringify(['twenty-seven']),
-                    points: 15,
-                    difficulty: 'easy',
-                  },
-                  {
-                    order: 3,
-                    type: 'open',
-                    text: 'Which prophet was taken up in a whirlwind?',
-                    correctAnswer: 'Elijah',
-                    aliases: JSON.stringify(['Prophet Elijah']),
-                    points: 15,
-                    difficulty: 'easy',
-                  },
-                  {
-                    order: 4,
-                    type: 'open',
-                    text: 'Who interpreted dreams in Egypt and became second in command?',
-                    correctAnswer: 'Joseph',
-                    aliases: JSON.stringify(['Joseph of Egypt']),
-                    points: 15,
-                    difficulty: 'easy',
-                  },
-                  {
-                    order: 5,
-                    type: 'open',
-                    text: 'What was the name of the giant killed by David?',
-                    correctAnswer: 'Goliath',
-                    aliases: JSON.stringify(['the Philistine giant Goliath']),
-                    points: 15,
-                    difficulty: 'easy',
-                  },
-                  {
-                    order: 6,
-                    type: 'open',
-                    text: 'Which disciple walked on water with Jesus?',
-                    correctAnswer: 'Peter',
-                    aliases: JSON.stringify(['Simon Peter']),
-                    points: 15,
-                    difficulty: 'medium',
-                  },
-                  {
-                    order: 7,
-                    type: 'open',
-                    text: 'What is the first book of the Bible?',
-                    correctAnswer: 'Genesis',
-                    aliases: JSON.stringify(['Book of Genesis']),
-                    points: 15,
-                    difficulty: 'easy',
-                  },
-                  {
-                    order: 8,
-                    type: 'open',
-                    text: 'Who betrayed Jesus?',
-                    correctAnswer: 'Judas Iscariot',
-                    aliases: JSON.stringify(['Judas']),
-                    points: 15,
-                    difficulty: 'easy',
-                  },
-                  {
-                    order: 9,
-                    type: 'open',
-                    text: 'How many days did God take to create the world?',
-                    correctAnswer: '6',
-                    aliases: JSON.stringify(['six days']),
-                    points: 15,
-                    difficulty: 'easy',
-                  },
-                  {
-                    order: 10,
-                    type: 'open',
-                    text: 'What river was Jesus baptized in?',
-                    correctAnswer: 'Jordan',
-                    aliases: JSON.stringify(['River Jordan']),
-                    points: 15,
-                    difficulty: 'easy',
-                  },
-                ],
-              },
-            },
-
-            {
-              order: 4,
               name: 'Clue Reveal',
               gameMode: 'clue_reveal',
-              questionCount: 5,
+              questionCount: 3,
               timerSeconds: 20,
               pointsPerQuestion: 20,
               audienceLevel: 'high',
@@ -655,6 +551,110 @@ export class DevController {
                       'He is known for wise judgments between two mothers',
                       'He built the first temple in Jerusalem',
                     ]),
+                  },
+                ],
+              },
+            },
+
+            {
+              order: 4,
+              name: 'Ultimate Challenge',
+              gameMode: 'ultimate_challenge',
+              questionCount: 3,
+              timerSeconds: 20,
+              pointsPerQuestion: 15,
+              audienceLevel: 'low',
+              questions: {
+                create: [
+                  {
+                    order: 1,
+                    type: 'open',
+                    text: 'Who was the father of Abraham?',
+                    correctAnswer: 'Terah',
+                    aliases: JSON.stringify(['Terah the father of Abram']),
+                    points: 15,
+                    difficulty: 'easy',
+                  },
+                  {
+                    order: 2,
+                    type: 'open',
+                    text: 'How many books are in the New Testament?',
+                    correctAnswer: '27',
+                    aliases: JSON.stringify(['twenty-seven']),
+                    points: 15,
+                    difficulty: 'easy',
+                  },
+                  {
+                    order: 3,
+                    type: 'open',
+                    text: 'Which prophet was taken up in a whirlwind?',
+                    correctAnswer: 'Elijah',
+                    aliases: JSON.stringify(['Prophet Elijah']),
+                    points: 15,
+                    difficulty: 'easy',
+                  },
+                  {
+                    order: 4,
+                    type: 'open',
+                    text: 'Who interpreted dreams in Egypt and became second in command?',
+                    correctAnswer: 'Joseph',
+                    aliases: JSON.stringify(['Joseph of Egypt']),
+                    points: 15,
+                    difficulty: 'easy',
+                  },
+                  {
+                    order: 5,
+                    type: 'open',
+                    text: 'What was the name of the giant killed by David?',
+                    correctAnswer: 'Goliath',
+                    aliases: JSON.stringify(['the Philistine giant Goliath']),
+                    points: 15,
+                    difficulty: 'easy',
+                  },
+                  {
+                    order: 6,
+                    type: 'open',
+                    text: 'Which disciple walked on water with Jesus?',
+                    correctAnswer: 'Peter',
+                    aliases: JSON.stringify(['Simon Peter']),
+                    points: 15,
+                    difficulty: 'medium',
+                  },
+                  {
+                    order: 7,
+                    type: 'open',
+                    text: 'What is the first book of the Bible?',
+                    correctAnswer: 'Genesis',
+                    aliases: JSON.stringify(['Book of Genesis']),
+                    points: 15,
+                    difficulty: 'easy',
+                  },
+                  {
+                    order: 8,
+                    type: 'open',
+                    text: 'Who betrayed Jesus?',
+                    correctAnswer: 'Judas Iscariot',
+                    aliases: JSON.stringify(['Judas']),
+                    points: 15,
+                    difficulty: 'easy',
+                  },
+                  {
+                    order: 9,
+                    type: 'open',
+                    text: 'How many days did God take to create the world?',
+                    correctAnswer: '6',
+                    aliases: JSON.stringify(['six days']),
+                    points: 15,
+                    difficulty: 'easy',
+                  },
+                  {
+                    order: 10,
+                    type: 'open',
+                    text: 'What river was Jesus baptized in?',
+                    correctAnswer: 'Jordan',
+                    aliases: JSON.stringify(['River Jordan']),
+                    points: 15,
+                    difficulty: 'easy',
                   },
                 ],
               },

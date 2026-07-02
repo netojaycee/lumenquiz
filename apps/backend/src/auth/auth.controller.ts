@@ -4,65 +4,114 @@ import {
   Controller,
   HttpCode,
   Post,
+  Get,
+  Query,
   Req,
-  UnauthorizedException,
   UseGuards,
 } from '@nestjs/common'
 import { ThrottlerGuard } from '@nestjs/throttler'
 import { Request } from 'express'
 import { AuthService } from './auth.service'
-import { AdminGuard } from './guards/admin.guard'
-import { AdminLoginDto } from './dto/admin-login.dto'
-import { ModeratorVerifyDto } from './dto/moderator-verify.dto'
+import { LoginDto } from './dto/login.dto'
+import { InviteDto } from './dto/invite.dto'
+import { SetupPasswordDto } from './dto/setup-password.dto'
+import { ForgotPasswordDto } from './dto/forgot-password.dto'
+import { ResetPasswordDto } from './dto/reset-password.dto'
+import { AuthSessionGuard } from './guards/auth-session.guard'
+import { OwnerGuard } from './guards/owner.guard'
 
 @Controller('auth')
 export class AuthController {
   constructor(private readonly auth: AuthService) {}
 
-  @Post('admin/login')
+  @Post('login')
   @HttpCode(200)
   @UseGuards(ThrottlerGuard)
-  async adminLogin(@Body() dto: AdminLoginDto, @Req() req: Request): Promise<{ ok: boolean }> {
-    if (!this.auth.validateAdminPassword(dto.password)) {
-      throw new UnauthorizedException('Invalid password')
-    }
-    req.session.isAdmin = true
+  async login(@Body() dto: LoginDto, @Req() req: Request) {
+    const user = await this.auth.login(dto)
+    
+    // Save to express-session
+    req.session.userId = user.id
+    req.session.userEmail = user.email
+    req.session.userRole = user.role
+    req.session.userAreaName = user.areaName
+    req.session.isAdmin = user.role === 'ADMIN' // Maintain backward compatibility if needed
+
     await new Promise<void>((resolve, reject) =>
       req.session.save((err) => (err ? reject(err) : resolve())),
     )
-    return { ok: true }
+
+    return {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      role: user.role,
+      areaName: user.areaName,
+    }
   }
 
-  @Post('admin/logout')
+  @Post('logout')
   @HttpCode(200)
-  adminLogout(@Req() req: Request) {
+  logout(@Req() req: Request) {
     req.session.destroy(() => undefined)
     return { ok: true }
   }
 
-  @Post('admin/change-password')
-  @HttpCode(200)
-  @UseGuards(AdminGuard)
-  changeAdminPassword(@Body() dto: { currentPassword: string; newPassword: string }) {
-    this.auth.changeAdminPassword(dto.currentPassword, dto.newPassword)
-    return { ok: true }
+  @Get('session')
+  @UseGuards(AuthSessionGuard)
+  async getSession(@Req() req: Request) {
+    return {
+      userId: req.session.userId,
+      email: req.session.userEmail,
+      role: req.session.userRole,
+      areaName: req.session.userAreaName,
+    }
   }
 
-  @Post('moderator/change-pin')
+  @Post('invite')
   @HttpCode(200)
-  @UseGuards(AdminGuard)
-  changeModeratorPin(@Body() dto: { newPin: string }) {
-    this.auth.changeModeratorPin(dto.newPin)
-    return { ok: true }
+  @UseGuards(AuthSessionGuard, OwnerGuard)
+  async invite(@Body() dto: InviteDto, @Req() req: Request) {
+    const sender = {
+      role: req.session.userRole!,
+      areaName: req.session.userAreaName,
+    }
+    return this.auth.invite(dto, sender)
   }
 
-  @Post('moderator/verify')
+  @Get('verify-invite')
+  async verifyInvite(@Query('token') token: string) {
+    return this.auth.verifyInvitation(token)
+  }
+
+  @Post('setup-password')
+  @HttpCode(200)
+  async setupPassword(@Body() dto: SetupPasswordDto) {
+    return this.auth.setupPassword(dto)
+  }
+
+  @Post('forgot-password')
   @HttpCode(200)
   @UseGuards(ThrottlerGuard)
-  moderatorVerify(@Body() dto: ModeratorVerifyDto) {
-    if (!this.auth.validateModeratorPin(dto.pin)) {
-      throw new UnauthorizedException('Invalid moderator PIN')
-    }
-    return { ok: true, sessionId: dto.sessionId }
+  async forgotPassword(@Body() dto: ForgotPasswordDto) {
+    return this.auth.forgotPassword(dto)
+  }
+
+  @Get('verify-reset-token')
+  async verifyResetToken(@Query('token') token: string) {
+    return this.auth.verifyResetToken(token)
+  }
+
+  @Post('reset-password')
+  @HttpCode(200)
+  async resetPassword(@Body() dto: ResetPasswordDto) {
+    return this.auth.resetPassword(dto)
+  }
+
+  @Post('change-password')
+  @HttpCode(200)
+  @UseGuards(AuthSessionGuard)
+  async changePassword(@Body() dto: { password: string }, @Req() req: Request) {
+    return this.auth.changePassword(req.session.userId!, dto.password)
   }
 }
