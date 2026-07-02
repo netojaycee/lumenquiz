@@ -18,7 +18,10 @@ COPY packages/shared-types/package.json packages/shared-types/package.json
 COPY packages/socket-events/package.json packages/socket-events/package.json
 COPY packages/game-engine/package.json packages/game-engine/package.json
 
-RUN pnpm install --frozen-lockfile
+# --prod=false forces devDependencies (tsc, next, nest) to install even when
+# NODE_ENV=production is set in the build environment. The runtime stage below
+# installs prod-only dependencies separately.
+RUN pnpm install --frozen-lockfile --prod=false
 
 COPY . .
 
