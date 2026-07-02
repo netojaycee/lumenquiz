@@ -54,6 +54,8 @@ export interface QuestionOpenPayload {
   durationMs: number
   questionIndex: number
   totalQuestions: number
+  isSuddenVictory?: boolean
+  suddenVictoryTeamIds?: string[]
 }
 
 export interface RoundVoteOpenPayload {
@@ -518,4 +520,29 @@ export interface AudienceGhostAnswerSubmitPayload {
   sessionId: string
   questionId: string
   answer: string
+}
+
+// ─── Sudden Victory Payloads ──────────────────────────────────────────────────
+
+export interface SVTeamMeta {
+  teamId: string
+  teamName: string
+  teamColor: string
+  score: number
+}
+
+export interface TieDetectedPayload {
+  tiedTeams: SVTeamMeta[]
+  topScore: number
+  hasEligibleQuestion: boolean
+}
+
+export interface SuddenVictoryIntroPayload {
+  tiedTeams: SVTeamMeta[]
+  questionCount: number
+}
+
+export interface SVReadyDeclarePayload {
+  sessionId: string
+  tiedTeams: SVTeamMeta[]
 }

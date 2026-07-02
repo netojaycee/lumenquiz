@@ -12,6 +12,8 @@ import { DevModule } from './dev/dev.module'
 import { UploadsModule } from './uploads/uploads.module'
 import { AiModule } from './ai/ai.module'
 import { SyncModule } from './sync/sync.module'
+import { EmailModule } from './common/email/email.module'
+import { UserModule } from './user/user.module'
 import { HealthController } from './health/health.controller'
 
 @Module({
@@ -30,6 +32,8 @@ import { HealthController } from './health/health.controller'
     UploadsModule,
     AiModule,
     SyncModule,
+    EmailModule,
+    UserModule,
   ],
   controllers: [HealthController],
 })

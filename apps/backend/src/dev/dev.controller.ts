@@ -14,24 +14,24 @@ export class DevController {
   @HttpCode(200)
   async seed(): Promise<{ message: string; quizId: string; sessionCode: string }> {
     // Clean all existing data
-    await this.prisma.audienceInteraction.deleteMany()
-    await this.prisma.audienceTFAnswer.deleteMany()
-    await this.prisma.audienceQuestionPrediction.deleteMany()
-    await this.prisma.audienceRoundPrediction.deleteMany()
-    await this.prisma.audienceMember.deleteMany()
-    await this.prisma.teamAnswer.deleteMany()
-    await this.prisma.sessionTeam.deleteMany()
-    await this.prisma.session.deleteMany()
-    await this.prisma.mCQOption.deleteMany()
-    await this.prisma.question.deleteMany()
-    await this.prisma.round.deleteMany()
-    await this.prisma.teamMember.deleteMany()
-    await this.prisma.team.deleteMany()
-    await this.prisma.quiz.deleteMany()
+    // await this.prisma.audienceInteraction.deleteMany()
+    // await this.prisma.audienceTFAnswer.deleteMany()
+    // await this.prisma.audienceQuestionPrediction.deleteMany()
+    // await this.prisma.audienceRoundPrediction.deleteMany()
+    // await this.prisma.audienceMember.deleteMany()
+    // await this.prisma.teamAnswer.deleteMany()
+    // await this.prisma.sessionTeam.deleteMany()
+    // await this.prisma.session.deleteMany()
+    // await this.prisma.mCQOption.deleteMany()
+    // await this.prisma.question.deleteMany()
+    // await this.prisma.round.deleteMany()
+    // await this.prisma.teamMember.deleteMany()
+    // await this.prisma.team.deleteMany()
+    // await this.prisma.quiz.deleteMany()
 
     const quiz = await this.prisma.quiz.create({
       data: {
-        name: 'Youth Sunday Bible Challenge 2024',
+        name: 'Youth Sunday Bible Challenge 2025',
         description: 'Sample quiz for development',
         defaultAudienceLevel: 'medium',
         teams: {

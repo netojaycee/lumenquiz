@@ -971,6 +971,24 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
           })
         }
       }
+    } else if (cache.suddenVictory) {
+      // SV: only tied teams are expected to answer
+      for (const tid of cache.suddenVictory.tiedTeamIds) {
+        if (!answeredTeamIds.has(tid)) {
+          const ts = cache.teamScores.get(tid)
+          if (ts) {
+            teamAnswers.push({
+              teamId: tid,
+              teamName: ts.teamName,
+              teamColor: ts.teamColor,
+              submittedAnswer: '',
+              isCorrect: false,
+              pointsEarned: 0,
+              timeRemaining: 0,
+            })
+          }
+        }
+      }
     } else if (!isClueReveal) {
       // Blitz and other simultaneous modes: all teams are expected to answer
       for (const [tid, ts] of cache.teamScores) {
@@ -996,7 +1014,8 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       correctAnswer: question.correctAnswer,
       teamAnswers,
       updatedScores: scores,
-      isLastQuestion: isTileBlitz ? isLastTileBlitzTurn : isLastQuestion,
+      isLastQuestion: cache.suddenVictory ? true : (isTileBlitz ? isLastTileBlitzTurn : isLastQuestion),
+      isSuddenVictory: !!cache.suddenVictory,
     })
 
     this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.SCORES_UPDATE, { scores })
@@ -1007,6 +1026,24 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       question.id,
       dbAnswers.map((a) => ({ teamId: a.teamId, isCorrect: a.isCorrect })),
     )
+
+    // Sudden Victory: notify moderator to declare winner; skip normal round flow
+    if (cache.suddenVictory) {
+      const svTeamIds = cache.suddenVictory.tiedTeamIds
+      client.emit(SERVER_EVENTS.SV_READY_DECLARE, {
+        sessionId,
+        tiedTeams: svTeamIds.map((tid) => {
+          const ts = cache.teamScores.get(tid)
+          return {
+            teamId: tid,
+            teamName: ts?.teamName ?? '',
+            teamColor: ts?.teamColor ?? '',
+            score: ts?.score ?? 0,
+          }
+        }),
+      })
+      return
+    }
 
     if (isEndOfFlow) {
       cache.status = SessionStatus.QUESTION_SUMMARY
@@ -1240,8 +1277,144 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     const cache = activeSessions.get(sessionId)
     if (!cache) return
 
-    cache.status = SessionStatus.SESSION_END
+    // Tie check — only run before any Sudden Victory has been played
+    if (!cache.suddenVictory) {
+      const scores = this.scoresArray(cache)
+      const topScore = scores[0]?.score ?? 0
+      const tiedAtTop = scores.filter((s) => s.score === topScore)
+      if (tiedAtTop.length > 1) {
+        const svQuestion = await this.pickSVQuestion(cache.quizId)
+        client.emit(SERVER_EVENTS.TIE_DETECTED, {
+          tiedTeams: tiedAtTop.map((s) => ({
+            teamId: s.teamId,
+            teamName: s.teamName,
+            teamColor: s.teamColor,
+            score: s.score,
+          })),
+          topScore,
+          hasEligibleQuestion: svQuestion !== null,
+        })
+        return
+      }
+    }
 
+    await this.doSessionEnd(sessionId, cache)
+  }
+
+  // ─── Moderator: force end (skip tie check, used after SV or by choice) ────────
+
+  @SubscribeMessage(MODERATOR_EVENTS.FORCE_END)
+  async handleForceEnd(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { sessionId: string },
+  ): Promise<void> {
+    if (!this.isModerator(client)) return
+    const { sessionId } = payload ?? {}
+    const cache = activeSessions.get(sessionId)
+    if (!cache) return
+    await this.doSessionEnd(sessionId, cache)
+  }
+
+  // ─── Moderator: start Sudden Victory round ────────────────────────────────────
+
+  @SubscribeMessage(MODERATOR_EVENTS.START_SUDDEN_VICTORY)
+  async handleStartSuddenVictory(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { sessionId: string },
+  ): Promise<void> {
+    if (!this.isModerator(client)) return
+    const { sessionId } = payload ?? {}
+    const cache = activeSessions.get(sessionId)
+    if (!cache) return
+
+    const question = await this.pickSVQuestion(cache.quizId)
+    if (!question) {
+      client.emit(SERVER_EVENTS.ERROR, {
+        code: 'NO_SV_QUESTION',
+        message: 'No eligible MCQ questions found for Sudden Victory',
+      })
+      return
+    }
+
+    const scores = this.scoresArray(cache)
+    const topScore = scores[0]?.score ?? 0
+    const tiedTeams = scores.filter((s) => s.score === topScore)
+    const tiedTeamIds = tiedTeams.map((s) => s.teamId)
+
+    cache.suddenVictory = { tiedTeamIds, question, timerHandle: null }
+    cache.status = SessionStatus.SUDDEN_VICTORY_INTRO
+
+    this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.SUDDEN_VICTORY_INTRO, {
+      tiedTeams: tiedTeams.map((s) => ({
+        teamId: s.teamId,
+        teamName: s.teamName,
+        teamColor: s.teamColor,
+        score: s.score,
+      })),
+      questionCount: 1,
+    })
+  }
+
+  // ─── Moderator: launch the Sudden Victory question ────────────────────────────
+
+  @SubscribeMessage(MODERATOR_EVENTS.LAUNCH_SV_QUESTION)
+  handleLaunchSVQuestion(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { sessionId: string },
+  ): void {
+    if (!this.isModerator(client)) return
+    const { sessionId } = payload ?? {}
+    const cache = activeSessions.get(sessionId)
+    if (!cache || !cache.suddenVictory || cache.status !== SessionStatus.SUDDEN_VICTORY_INTRO) return
+
+    const { question, tiedTeamIds } = cache.suddenVictory
+    const durationMs = 20_000
+    const startTime = Date.now()
+    const deadline = startTime + durationMs
+
+    cache.status = SessionStatus.QUESTION_OPEN
+    cache.currentRoundQuestions = [question]
+    cache.currentQuestionIndex = 0
+    cache.submittedTeams = new Set()
+    cache.questionStartTime = startTime
+    cache.timerDeadline = deadline
+    cache.timerDurationMs = durationMs
+    cache.pausedAt = null
+
+    cache.suddenVictory.timerHandle = setTimeout(() => {
+      if (cache.status !== SessionStatus.QUESTION_OPEN) return
+      this.lockQuestion(sessionId, cache)
+      this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.QUESTION_TIMER_ELAPSED)
+    }, durationMs)
+
+    this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.QUESTION_OPEN, {
+      questionId: question.id,
+      question,
+      startTime,
+      durationMs,
+      questionIndex: 0,
+      totalQuestions: 1,
+      isSuddenVictory: true,
+      suddenVictoryTeamIds: tiedTeamIds,
+    })
+  }
+
+  // ─── Helper: pick a random MCQ question from the quiz for Sudden Victory ──────
+
+  private async pickSVQuestion(quizId: string): Promise<Question | null> {
+    const dbQuestions = await this.prisma.question.findMany({
+      where: { round: { quizId }, type: 'mcq', deletedAt: null },
+      include: { options: true },
+    })
+    if (dbQuestions.length === 0) return null
+    const pick = dbQuestions[Math.floor(Math.random() * dbQuestions.length)]
+    return mapPrismaQuestion(pick as PrismaQuestionWithOptions)
+  }
+
+  // ─── Helper: shared session-end finalisation ──────────────────────────────────
+
+  private async doSessionEnd(sessionId: string, cache: SessionCache): Promise<void> {
+    cache.status = SessionStatus.SESSION_END
     const finalScores = this.scoresArray(cache)
     const leaderboard = await this.audienceLeaderboard(sessionId, 50)
     const highlights = await this.computeHighlights(sessionId)
@@ -1251,10 +1424,7 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       data: { status: 'session_end', endedAt: new Date() },
     })
     void this.prisma.quiz
-      .update({
-        where: { id: cache.quizId },
-        data: { status: 'completed' },
-      })
+      .update({ where: { id: cache.quizId }, data: { status: 'completed' } })
       .catch(() => undefined)
 
     const correctInteractions = await this.prisma.audienceInteraction.count({
@@ -1277,7 +1447,6 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       },
     })
 
-    // Evict cache after a grace period so late-joining clients still get state
     setTimeout(() => activeSessions.delete(sessionId), 5 * 60 * 1000)
   }
 
@@ -1422,6 +1591,9 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       return // do not score yet; answer is provisional until lock
     }
 
+    // During Sudden Victory, only tied teams may submit
+    if (cache.suddenVictory && !cache.suddenVictory.tiedTeamIds.includes(teamId)) return
+
     if (cache.submittedTeams.has(teamId)) return // already submitted (atomic, Blitz only)
 
     cache.submittedTeams.add(teamId)
@@ -1429,7 +1601,8 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     const question = cache.currentRoundQuestions[cache.currentQuestionIndex]
     if (!question || question.id !== questionId) return
 
-    const strategy = getStrategy(round?.gameMode ?? 'blitz')
+    // SV always uses blitz time-decay so point difference is visible
+    const strategy = cache.suddenVictory ? blitzMode : getStrategy(round?.gameMode ?? 'blitz')
 
     const validation = strategy.validateAnswer(answer, question)
     const timeRemainingMs = Math.max(0, cache.timerDeadline - serverTs)
@@ -1480,8 +1653,11 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       td.correctAnswerTimeMs += timeRemainingMs
     }
 
-    // Check if all teams have now submitted
-    if (cache.submittedTeams.size >= cache.teamScores.size) {
+    // During SV only wait for the tied teams; otherwise wait for all teams
+    const expectedSubmissions = cache.suddenVictory
+      ? cache.suddenVictory.tiedTeamIds.length
+      : cache.teamScores.size
+    if (cache.submittedTeams.size >= expectedSubmissions) {
       if (cache.questionTimerHandle) {
         clearTimeout(cache.questionTimerHandle)
         cache.questionTimerHandle = null
@@ -3772,8 +3948,13 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       // Include tiebreaker in payload so frontend can display tie context
       tiebreakerMs: t.correctAnswerTimeMs,
     }))
-    // Sort: score DESC, then correctAnswerTimeMs DESC (faster cumulative answers win the tie)
-    arr.sort((a, b) => b.score - a.score || b.tiebreakerMs - a.tiebreakerMs)
+    // Sort: 1) score DESC  2) speed (correctAnswerTimeMs DESC)  3) last-round score DESC
+    const lastRoundId = cache.currentRoundId ?? ''
+    arr.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score
+      if (b.tiebreakerMs !== a.tiebreakerMs) return b.tiebreakerMs - a.tiebreakerMs
+      return (b.roundScores[lastRoundId] ?? 0) - (a.roundScores[lastRoundId] ?? 0)
+    })
     arr.forEach((s, i) => {
       s.rank = i + 1
     })

@@ -23,14 +23,15 @@ export class QuizService {
 
   // ─── Quiz ────────────────────────────────────────────────────────────────────
 
-  async createQuiz(dto: CreateQuizDto) {
+  async createQuiz(dto: CreateQuizDto & { areaName?: string | null }) {
     const quiz = await this.prisma.quiz.create({
       data: {
         name: dto.name,
         description: dto.description,
         date: dto.date ? new Date(dto.date) : undefined,
+        areaName: dto.areaName || null,
       },
-      select: { id: true, name: true, description: true, date: true, status: true, createdAt: true },
+      select: { id: true, name: true, description: true, date: true, status: true, areaName: true, createdAt: true },
     })
 
     // Auto-create a fixed session for this quiz (code is permanent from creation)
@@ -45,9 +46,15 @@ export class QuizService {
     }
   }
 
-  async listQuizzes() {
+  async listQuizzes(userRole: string, areaName: string | null) {
+    // If not admin, strictly scope list to their areaName
+    const whereCondition: any = { deletedAt: null }
+    if (userRole !== 'ADMIN') {
+      whereCondition.areaName = areaName
+    }
+
     const quizzes = await this.prisma.quiz.findMany({
-      where: { deletedAt: null },
+      where: whereCondition,
       orderBy: { createdAt: 'desc' },
       select: {
         id: true,
@@ -55,6 +62,7 @@ export class QuizService {
         description: true,
         date: true,
         status: true,
+        areaName: true,
         createdAt: true,
         updatedAt: true,
         _count: { select: { rounds: true, teams: true, sessions: true } },
@@ -63,9 +71,14 @@ export class QuizService {
     return quizzes
   }
 
-  async getQuiz(id: string) {
+  async getQuiz(id: string, userRole?: string, areaName?: string | null) {
+    const whereCondition: any = { id, deletedAt: null }
+    if (userRole && userRole !== 'ADMIN') {
+      whereCondition.areaName = areaName
+    }
+
     const quiz = await this.prisma.quiz.findFirst({
-      where: { id, deletedAt: null },
+      where: whereCondition,
       include: {
         teams: {
           where: { deletedAt: null },
@@ -94,8 +107,8 @@ export class QuizService {
     return quiz
   }
 
-  async updateQuiz(id: string, dto: UpdateQuizDto) {
-    await this.assertQuizExists(id)
+  async updateQuiz(id: string, dto: UpdateQuizDto, userRole?: string, areaName?: string | null) {
+    await this.assertQuizExists(id, userRole, areaName)
     return this.prisma.quiz.update({
       where: { id },
       data: {
@@ -108,8 +121,8 @@ export class QuizService {
     })
   }
 
-  async deleteQuiz(id: string) {
-    await this.assertQuizExists(id)
+  async deleteQuiz(id: string, userRole?: string, areaName?: string | null) {
+    await this.assertQuizExists(id, userRole, areaName)
     await this.prisma.quiz.update({
       where: { id },
       data: { deletedAt: new Date() },
@@ -397,9 +410,14 @@ export class QuizService {
 
   // ─── Private helpers ─────────────────────────────────────────────────────────
 
-  private async assertQuizExists(quizId: string) {
+  private async assertQuizExists(quizId: string, userRole?: string, areaName?: string | null) {
+    const whereCondition: any = { id: quizId, deletedAt: null }
+    if (userRole && userRole !== 'ADMIN') {
+      whereCondition.areaName = areaName
+    }
+
     const quiz = await this.prisma.quiz.findFirst({
-      where: { id: quizId, deletedAt: null },
+      where: whereCondition,
       select: { id: true },
     })
     if (!quiz) throw new NotFoundException(`Quiz ${quizId} not found`)

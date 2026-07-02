@@ -3,14 +3,24 @@ import { create } from 'zustand'
 import type { Quiz, Session, NetworkInfo } from '@apoquiz/shared-types'
 import { api } from '@/lib/api'
 
+interface UserSessionInfo {
+  id: string
+  email: string
+  name: string
+  role: string
+  areaName: string | null
+}
+
 interface HostStore {
   isAuthenticated: boolean
+  user: UserSessionInfo | null
   quizzes: Quiz[]
   currentQuiz: Quiz | null
   currentSession: Session | null
   networkInfo: NetworkInfo | null
 
   setAuthenticated: (v: boolean) => void
+  setUser: (u: UserSessionInfo | null) => void
   loadQuizzes: () => Promise<void>
   loadQuiz: (id: string) => Promise<void>
   setCurrentSession: (s: Session | null) => void
@@ -20,12 +30,14 @@ interface HostStore {
 
 export const useHostStore = create<HostStore>((set) => ({
   isAuthenticated: false,
+  user: null,
   quizzes: [],
   currentQuiz: null,
   currentSession: null,
   networkInfo: null,
 
   setAuthenticated: (v) => set({ isAuthenticated: v }),
+  setUser: (u) => set({ user: u }),
 
   loadQuizzes: async () => {
     const quizzes = await api.get<Quiz[]>('/quiz')
@@ -44,5 +56,5 @@ export const useHostStore = create<HostStore>((set) => ({
     set({ networkInfo: info })
   },
 
-  reset: () => set({ isAuthenticated: false, quizzes: [], currentQuiz: null, currentSession: null }),
+  reset: () => set({ isAuthenticated: false, user: null, quizzes: [], currentQuiz: null, currentSession: null }),
 }))

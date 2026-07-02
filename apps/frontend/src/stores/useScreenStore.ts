@@ -76,6 +76,9 @@ interface ScreenStore {
   audienceLevel: AudienceEngagementLevel | null
   qrOverlay: { dataURL: string; url: string; ip: string } | null
   rulesOverlay: { roundName?: string | null; rules: string[] } | null
+  suddenVictoryIntroData: { tiedTeams: Array<{ teamId: string; teamName: string; teamColor: string; score: number }>; questionCount: number } | null
+  isSuddenVictoryQuestion: boolean
+  suddenVictoryTeamIds: string[]
   activeInteraction: {
     type: AudienceInteractionType
     activity: AudienceActivity
@@ -118,6 +121,7 @@ interface ScreenStore {
   setClueState: (data: ClueStatePayload) => void
   applyClueNext: (data: ClueNextPayload) => void
   applyClueAnswerResult: (data: ClueAnswerResultPayload) => void
+  setSuddenVictoryIntro: (data: { tiedTeams: Array<{ teamId: string; teamName: string; teamColor: string; score: number }>; questionCount: number }) => void
   setAudienceLevel: (level: AudienceEngagementLevel) => void
   setAudienceInteractionStart: (data: any) => void
   updateAudienceInteraction: (data: any) => void
@@ -170,6 +174,9 @@ export const useScreenStore = create<ScreenStore>((set) => ({
   audienceLevel: null,
   qrOverlay: null,
   rulesOverlay: null,
+  suddenVictoryIntroData: null,
+  isSuddenVictoryQuestion: false,
+  suddenVictoryTeamIds: [],
   activeInteraction: null,
   ucReviewOverlay: null,
   ucAudioPlay: null,
@@ -229,6 +236,8 @@ export const useScreenStore = create<ScreenStore>((set) => ({
     allAnswered: false,
     timerElapsed: false,
     revealData: null,
+    isSuddenVictoryQuestion: (data as any).isSuddenVictory ?? false,
+    suddenVictoryTeamIds: (data as any).suddenVictoryTeamIds ?? s.suddenVictoryTeamIds,
     // Record active team for Tile Blitz
     tileBlitz: data.isTileBlitz && data.activeTeamId
       ? { ...(s.tileBlitz ?? {} as TileBlitzScreenState), activeQuestionTeamId: data.activeTeamId, bonusClaimData: null, bonusResult: null, bonusTimerStartTime: null, bonusTimerDurationMs: null }
@@ -258,6 +267,12 @@ export const useScreenStore = create<ScreenStore>((set) => ({
   }),
 
   setVoteClosed: () => set({ sessionStatus: SessionStatus.LOBBY, voteClosed: true }),
+
+  setSuddenVictoryIntro: (data) => set({
+    sessionStatus: SessionStatus.SUDDEN_VICTORY_INTRO,
+    suddenVictoryIntroData: data,
+    suddenVictoryTeamIds: data.tiedTeams.map((t) => t.teamId),
+  }),
 
   setReveal: (data) => set({ sessionStatus: SessionStatus.ANSWER_REVEAL, revealData: data }),
 

@@ -14,4 +14,9 @@ export class CreateQuizDto {
   @IsOptional()
   @IsDateString()
   date?: string
+
+  @IsOptional()
+  @IsString()
+  areaName?: string | null
 }
+

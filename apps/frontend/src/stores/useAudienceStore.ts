@@ -57,6 +57,7 @@ interface AudienceStore {
   setReveal: (data: QuestionRevealPayload) => void
   setRoundSummary: (data: RoundSummaryPayload) => void
   setSessionEnd: (data: SessionEndPayload) => void
+  setSuddenVictoryIntro?: (data: { tiedTeams: { teamId: string; teamName: string; teamColor: string; score: number }[]; questionCount: number }) => void
   setAudienceInteractionStart: (data: any) => void
   closeAudienceInteraction: () => void
   submitInteraction: (payload?: { predictedTeamId?: string; predictedValue?: number }) => void
@@ -137,6 +138,8 @@ export const useAudienceStore = create<AudienceStore>((set) => ({
   setRoundSummary: (data) => set({ sessionStatus: SessionStatus.ROUND_SUMMARY, roundSummary: data }),
 
   setSessionEnd: (data) => set({ sessionStatus: SessionStatus.SESSION_END, sessionEndData: data }),
+
+  setSuddenVictoryIntro: (_data) => set({ sessionStatus: 'sudden_victory_intro' as SessionStatus }),
 
   setAudienceInteractionStart: (data) => set({
     activeInteraction: {

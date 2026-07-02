@@ -40,7 +40,7 @@ import {
   CONNECTION_EVENTS,
 } from '@apoquiz/socket-events'
 import { SessionStatus, UserRole, AudienceEngagementLevel } from '@apoquiz/shared-types'
-import type { CumulativeScoresPayload, UCStatePayload, UCTurnReviewPayload } from '@apoquiz/socket-events'
+import type { CumulativeScoresPayload, UCStatePayload, UCTurnReviewPayload, TieDetectedPayload, SVReadyDeclarePayload } from '@apoquiz/socket-events'
 
 // Local shape matching CachedRound from the session cache
 interface RoundInfo {
@@ -56,7 +56,7 @@ type ConnectPhase = 'checking' | 'connecting' | 'connected' | 'failed'
 
 // ─── Status badge ─────────────────────────────────────────────────────────────
 
-const STATUS_LABELS: Partial<Record<SessionStatus, string>> = {
+const STATUS_LABELS: Partial<Record<SessionStatus | string, string>> = {
   [SessionStatus.LOBBY]: 'Lobby',
   [SessionStatus.AUDIENCE_VOTE]: 'Audience Vote',
   [SessionStatus.ROUND_INTRO]: 'Round Intro',
@@ -75,9 +75,10 @@ const STATUS_LABELS: Partial<Record<SessionStatus, string>> = {
   [SessionStatus.UC_ACTIVE]: 'Round Active',
   [SessionStatus.CLUE_OPEN]: 'Clue Open',
   [SessionStatus.CLUE_ANSWERING]: 'Clue Answering',
+  ['sudden_victory_intro']: 'Sudden Victory',
 }
 
-const STATUS_COLORS: Partial<Record<SessionStatus, string>> = {
+const STATUS_COLORS: Partial<Record<SessionStatus | string, string>> = {
   [SessionStatus.LOBBY]: 'bg-surface text-text-secondary',
   [SessionStatus.AUDIENCE_VOTE]: 'bg-timer-warning/20 text-timer-warning',
   [SessionStatus.ROUND_INTRO]: 'bg-blitz-accent/20 text-blitz-accent',
@@ -96,6 +97,7 @@ const STATUS_COLORS: Partial<Record<SessionStatus, string>> = {
   [SessionStatus.UC_ACTIVE]: 'bg-timer-warning/20 text-timer-warning',
   [SessionStatus.CLUE_OPEN]: 'bg-blitz-accent/20 text-blitz-accent',
   [SessionStatus.CLUE_ANSWERING]: 'bg-timer-warning/20 text-timer-warning',
+  ['sudden_victory_intro']: 'bg-red-500/20 text-red-400',
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -131,8 +133,11 @@ export function ModeratorClient(): React.ReactElement {
     setAudienceInteractionStart,
     updateAudienceInteraction,
     closeAudienceInteraction,
+    suddenVictoryTeamIds,
   } = useScreenStore()
 
+  const [tieModal, setTieModal] = useState<TieDetectedPayload | null>(null)
+  const [svReadyData, setSVReadyData] = useState<SVReadyDeclarePayload | null>(null)
   const [phase, setPhase] = useState<ConnectPhase>('checking')
   const [rounds, setRounds] = useState<RoundInfo[]>([])
   const [readyForSummary, setReadyForSummary] = useState(false)
@@ -261,6 +266,14 @@ export function ModeratorClient(): React.ReactElement {
       setUCTurnReviews((prev) => new Map(prev).set(data.teamId, data))
     })
 
+    socket.on(SERVER_EVENTS.TIE_DETECTED, (data: TieDetectedPayload) => {
+      setTieModal(data)
+    })
+
+    socket.on(SERVER_EVENTS.SV_READY_DECLARE, (data: SVReadyDeclarePayload) => {
+      setSVReadyData(data)
+    })
+
     const timeout = setTimeout(() => {
       setPhase((current) => (current === 'connected' ? 'connected' : 'failed'))
     }, 10000)
@@ -276,6 +289,8 @@ export function ModeratorClient(): React.ReactElement {
       // socket.off(SERVER_EVENTS.TILEBLITZ_BONUS_RESULT, onBonusResult)
       socket.off(SERVER_EVENTS.TILEBLITZ_PENDING_ANSWER)
       socket.off(SERVER_EVENTS.UC_TURN_REVIEW)
+      socket.off(SERVER_EVENTS.TIE_DETECTED)
+      socket.off(SERVER_EVENTS.SV_READY_DECLARE)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId])
@@ -391,6 +406,20 @@ export function ModeratorClient(): React.ReactElement {
 
   const endSession = useCallback(() => {
     emit(MODERATOR_EVENTS.SESSION_END, { sessionId })
+  }, [emit, sessionId])
+
+  const forceEnd = useCallback(() => {
+    emit(MODERATOR_EVENTS.FORCE_END, { sessionId })
+    setSVReadyData(null)
+  }, [emit, sessionId])
+
+  const startSuddenVictory = useCallback(() => {
+    emit(MODERATOR_EVENTS.START_SUDDEN_VICTORY, { sessionId })
+    setTieModal(null)
+  }, [emit, sessionId])
+
+  const launchSVQuestion = useCallback(() => {
+    emit(MODERATOR_EVENTS.LAUNCH_SV_QUESTION, { sessionId })
   }, [emit, sessionId])
 
   const setEngagementLevel = useCallback((level: AudienceEngagementLevel) => {
@@ -1146,14 +1175,14 @@ const toggleTimer = useCallback(() => {
                     </Button>
                   )}
 
-                  {primaryAction === 'summary' && (
+                  {primaryAction === 'summary' && !svReadyData && (
                     <Button size="lg" onClick={showRoundSummary} className="flex-1">
                       <Trophy className="mr-2 h-5 w-5" />
                       Round Summary
                     </Button>
                   )}
 
-                  {primaryAction === 'next_question' && !isLastQuestion && (
+                  {primaryAction === 'next_question' && !isLastQuestion && !svReadyData && (
                     <Button size="lg" onClick={nextQuestion} className="flex-1">
                       <ChevronRight className="mr-2 h-5 w-5" />
                       Next Question
@@ -1997,11 +2026,11 @@ const toggleTimer = useCallback(() => {
                       ))}
                   </div>
                 )}
-                <div className="flex gap-3">
-                  {isLastRound ? (
+                <div className="flex flex-col gap-2">
+                  {isLastRound || svReadyData ? (
                     <Button variant="destructive" onClick={endSession} className="flex-1">
                       <LogOut className="mr-2 h-4 w-4" />
-                      End Quiz &amp; Declare Winner
+                      {svReadyData ? 'Declare Winner' : 'End Quiz & Declare Winner'}
                     </Button>
                   ) : (
                     <Button onClick={nextRound} className="flex-1">
@@ -2009,6 +2038,69 @@ const toggleTimer = useCallback(() => {
                       Next Round
                     </Button>
                   )}
+                </div>
+              </motion.div>
+            )}
+
+            {/* SUDDEN VICTORY INTRO */}
+            {status === ('sudden_victory_intro' as SessionStatus) && (
+              <motion.div
+                key="sv-intro-mod"
+                initial={{ opacity: 0, y: 12 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+              >
+                <p className="text-red-400 mb-2 text-xs tracking-widest uppercase font-black">
+                  ⚡ Sudden Victory
+                </p>
+                <h2 className="mb-1 text-xl font-bold text-white">Tiebreaker Round</h2>
+                <p className="text-text-muted mb-4 text-sm">
+                  One question — first correct answer wins
+                </p>
+                <div className="bg-surface border-border mb-4 rounded-xl border p-4 space-y-2">
+                  <p className="text-text-muted text-xs tracking-wide uppercase mb-2">Competing Teams</p>
+                  {suddenVictoryTeamIds.map((tid) => {
+                    const s = scores.find((sc) => sc.teamId === tid)
+                    return s ? (
+                      <div key={tid} className="flex items-center gap-2.5 rounded-lg px-3 py-2 bg-red-500/8 border border-red-500/15">
+                        <div className="h-3 w-3 rounded-full flex-shrink-0" style={{ backgroundColor: s.teamColor }} />
+                        <span className="flex-1 text-sm font-semibold text-white">{s.teamName}</span>
+                        <span className="text-red-400 text-xs font-bold">{s.score} pts</span>
+                      </div>
+                    ) : null
+                  })}
+                </div>
+                <Button size="lg" onClick={launchSVQuestion} className="w-full bg-red-600 hover:bg-red-500 text-white">
+                  <Play className="mr-2 h-5 w-5" />
+                  Launch Sudden Victory Question
+                </Button>
+              </motion.div>
+            )}
+
+            {/* SV READY DECLARE — shown after SV answer reveal */}
+            {svReadyData && status === SessionStatus.ANSWER_REVEAL && (
+              <motion.div
+                key="sv-ready"
+                initial={{ opacity: 0, y: 12 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+                className="mt-4"
+              >
+                <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 mb-3">
+                  <p className="text-red-400 text-xs font-black uppercase tracking-widest mb-1">
+                    Sudden Victory Complete
+                  </p>
+                  <p className="text-white text-sm">Winner determined. Declare to end the quiz.</p>
+                </div>
+                <div className="flex gap-3">
+                  <Button size="lg" variant="outline" onClick={showCumulative} className="flex-1">
+                    <Trophy className="mr-2 h-5 w-5" />
+                    Show Standings
+                  </Button>
+                  <Button size="lg" onClick={endSession} className="flex-1 bg-red-600 hover:bg-red-500 text-white">
+                    <LogOut className="mr-2 h-5 w-5" />
+                    Declare Winner
+                  </Button>
                 </div>
               </motion.div>
             )}
@@ -2231,6 +2323,68 @@ const toggleTimer = useCallback(() => {
           </div>
         </aside>
       </div>
+
+      {/* TIE DETECTED modal */}
+      <AnimatePresence>
+        {tieModal && (
+          <motion.div
+            key="tie-modal"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
+          >
+            <motion.div
+              initial={{ scale: 0.88, y: 20 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.88, y: 20 }}
+              className="bg-surface border-border mx-4 w-full max-w-md rounded-2xl border p-6 shadow-2xl"
+            >
+              <p className="text-red-400 text-[10px] font-black uppercase tracking-[0.3em] mb-2">
+                ⚡ Tiebreaker Required
+              </p>
+              <h2 className="text-white text-2xl font-black mb-1">It&apos;s a Tie!</h2>
+              <p className="text-text-muted text-sm mb-4">
+                {tieModal.tiedTeams.length} teams share the top score of{' '}
+                <span className="text-white font-bold">{tieModal.topScore} pts</span>
+              </p>
+              <div className="space-y-2 mb-6">
+                {tieModal.tiedTeams.map((t) => (
+                  <div key={t.teamId} className="flex items-center gap-2.5 rounded-lg px-3 py-2 bg-red-500/8 border border-red-500/15">
+                    <div className="h-3 w-3 rounded-full flex-shrink-0" style={{ backgroundColor: t.teamColor }} />
+                    <span className="flex-1 text-sm font-semibold text-white">{t.teamName}</span>
+                    <span className="text-red-400 text-xs font-bold">{t.score} pts</span>
+                  </div>
+                ))}
+              </div>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => { setTieModal(null); forceEnd() }}
+                  className="flex-1 rounded-xl border border-white/10 py-3 text-sm font-semibold text-white/50 hover:text-white/80 transition-colors"
+                >
+                  Force End
+                  <p className="text-[10px] text-white/25 font-normal mt-0.5">Use fastest-time tie-break</p>
+                </button>
+                <button
+                  disabled={!tieModal.hasEligibleQuestion}
+                  onClick={startSuddenVictory}
+                  className={cn(
+                    'flex-1 rounded-xl py-3 text-sm font-black transition-colors',
+                    tieModal.hasEligibleQuestion
+                      ? 'bg-red-600/25 text-red-300 hover:bg-red-600/40 border border-red-500/30'
+                      : 'bg-white/5 text-white/25 cursor-not-allowed border border-white/5',
+                  )}
+                >
+                  ⚡ Sudden Victory
+                  <p className="text-[10px] font-normal mt-0.5 opacity-70">
+                    {tieModal.hasEligibleQuestion ? '1 question · first correct wins' : 'No MCQ questions available'}
+                  </p>
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* UC Award / Remove confirmation dialog */}
       <AnimatePresence>

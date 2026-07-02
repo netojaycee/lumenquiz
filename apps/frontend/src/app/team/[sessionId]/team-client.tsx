@@ -44,6 +44,8 @@ export function TeamClient(): React.ReactElement {
     teamName,
     teamColor,
     score,
+    roundScores,
+    currentRoundId,
     rank,
     sessionStatus,
     currentQuestion,
@@ -69,6 +71,7 @@ export function TeamClient(): React.ReactElement {
     ucState,
     clueState,
     clueLockedOut,
+    suddenVictoryTiedTeamIds,
   } = useTeamStore()
 
   const [phase, setPhase] = useState<ConnectPhase>('checking')
@@ -493,19 +496,32 @@ export function TeamClient(): React.ReactElement {
         <div className="relative flex items-center justify-between px-5 py-3">
           <div>
             <p className="text-base font-black text-white leading-tight">{teamName ?? 'My Team'}</p>
-            {rank != null && (
-              <div className="flex items-center gap-1.5 mt-0.5">
-                <div className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: teamColorHex }} />
-                <p className="text-white/40 text-xs font-semibold">Rank #{rank}</p>
-              </div>
-            )}
+            {rank != null && (() => {
+              const rankLabel =
+                rank === 1 ? { icon: '🏆', text: "You're leading!", color: '#F59E0B' } :
+                rank === 2 ? { icon: '🥈', text: '2nd place — push harder!', color: '#94A3B8' } :
+                rank === 3 ? { icon: '🥉', text: '3rd — keep fighting!', color: '#CD7F32' } :
+                             { icon: '🔥', text: `#${rank} — fight for it!`, color: 'rgba(255,255,255,0.35)' }
+              return (
+                <div className="flex items-center gap-1.5 mt-0.5">
+                  <span className="text-xs leading-none">{rankLabel.icon}</span>
+                  <p className="text-xs font-bold" style={{ color: rankLabel.color }}>
+                    {rankLabel.text}
+                  </p>
+                </div>
+              )
+            })()}
           </div>
           <div className="flex items-center gap-3">
             <div className="text-right">
+              {/* Round score — resets to 0 each round */}
               <p className="text-2xl font-black tabular-nums leading-none" style={{ color: teamColorHex }}>
-                {score}
+                {roundScores[currentRoundId ?? ''] ?? 0}
               </p>
-              <p className="text-white/25 text-[10px] font-bold uppercase tracking-widest mt-0.5">pts</p>
+              <p className="text-white/25 text-[10px] font-bold uppercase tracking-widest mt-0.5">round pts</p>
+              {/* Cumulative score — swap with above when boss prefers overall total */}
+              {/* <p className="text-2xl font-black tabular-nums leading-none" style={{ color: teamColorHex }}>{score}</p> */}
+              {/* <p className="text-white/25 text-[10px] font-bold uppercase tracking-widest mt-0.5">total pts</p> */}
             </div>
             <button
               onClick={() => {
@@ -1219,17 +1235,7 @@ export function TeamClient(): React.ReactElement {
                 </motion.p>
               )}
 
-              {/* Score card */}
-              <motion.div
-                initial={{ opacity: 0, y: 16 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.7 }}
-                className="relative z-10 w-full rounded-2xl border border-white/8 bg-white/[0.04] px-6 py-4 text-center"
-              >
-                <p className="text-white/25 text-[10px] font-bold uppercase tracking-widest mb-1">Total Score</p>
-                <p className="text-3xl font-black tabular-nums text-white">{score}</p>
-                {rank != null && <p className="text-white/35 text-xs mt-0.5">Rank #{rank}</p>}
-              </motion.div>
+              {/* Total score hidden during reveal — shown at round summary */}
             </motion.div>
           )}
 
@@ -1345,6 +1351,52 @@ export function TeamClient(): React.ReactElement {
                     </div>
                   </div>
                 </motion.div>
+              </motion.div>
+            )
+          })()}
+
+          {/* ── SUDDEN VICTORY INTRO ─────────────────────────────────────── */}
+          {status === ('sudden_victory_intro' as SessionStatus) && (() => {
+            const isInSV = suddenVictoryTiedTeamIds.includes(teamId ?? '')
+            return (
+              <motion.div
+                key="sv-intro-team"
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0 }}
+                className="flex flex-1 flex-col items-center justify-center gap-6 p-8 text-center"
+              >
+                <motion.div
+                  animate={{ opacity: [0.6, 1, 0.6] }}
+                  transition={{ repeat: Infinity, duration: 2 }}
+                  className="text-7xl"
+                >
+                  ⚡
+                </motion.div>
+                <div>
+                  <p className="text-[10px] font-black tracking-[0.4em] uppercase mb-1" style={{ color: isInSV ? '#EF4444' : 'rgba(255,255,255,0.3)' }}>
+                    Tiebreaker
+                  </p>
+                  <h2 className="text-3xl font-black text-white">Sudden Victory</h2>
+                </div>
+                {isInSV ? (
+                  <div className="rounded-2xl border border-red-500/30 bg-red-500/10 px-6 py-4">
+                    <p className="text-red-300 font-black text-lg">You&apos;re in the Sudden Victory!</p>
+                    <p className="text-white/50 text-sm mt-1">Get ready — one question, first correct wins</p>
+                  </div>
+                ) : (
+                  <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-6 py-4">
+                    <p className="text-white/60 font-semibold">You&apos;re a spectator</p>
+                    <p className="text-white/30 text-sm mt-1">Watch the tiebreaker play out</p>
+                  </div>
+                )}
+                <motion.p
+                  animate={{ opacity: [0, 1, 0] }}
+                  transition={{ repeat: Infinity, duration: 1.8 }}
+                  className="text-white/30 text-xs font-bold tracking-[0.3em] uppercase"
+                >
+                  Stand by…
+                </motion.p>
               </motion.div>
             )
           })()}

@@ -17,6 +17,7 @@ notes/
 docs/
 apps/desktop/
 apps/backend/data/sessions/
+apps/backend/uploads/uc-audio/
 # --- Ignore everything in public EXCEPT the sounds folder ---
 # 1. Target the contents of public, not the public folder itself
 apps/backend/public/*
@@ -34,3 +35,6 @@ AGENTS.md
 CLAUDE.md
 .agents/
 .claude/
+
+
+multitenancy_plan.md

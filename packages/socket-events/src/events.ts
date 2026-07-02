@@ -47,6 +47,10 @@ export const SERVER_EVENTS = {
   SCREEN_QR_HIDE: 'screen:qr:hide',
   RULES_OVERLAY_SHOW: 'round:rules:overlay:show',
   RULES_OVERLAY_HIDE: 'round:rules:overlay:hide',
+  // Sudden Victory tiebreaker
+  TIE_DETECTED: 'sv:tie:detected',
+  SUDDEN_VICTORY_INTRO: 'sv:intro',
+  SV_READY_DECLARE: 'sv:ready:declare',
 } as const
 
 // Client → Server: moderator events
@@ -89,6 +93,10 @@ export const MODERATOR_EVENTS = {
   // Screen overlay controls
   SCREEN_QR: 'moderator:screen:qr',
   RULES_TOGGLE: 'moderator:rules:toggle',
+  // Sudden Victory tiebreaker
+  FORCE_END: 'moderator:force:end',
+  START_SUDDEN_VICTORY: 'moderator:sv:start',
+  LAUNCH_SV_QUESTION: 'moderator:sv:launch:question',
 } as const
 
 // Client → Server: team events

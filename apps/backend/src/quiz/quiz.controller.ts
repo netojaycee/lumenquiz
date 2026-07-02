@@ -10,11 +10,13 @@ import {
   Post,
   Put,
   Query,
+  Req,
   UploadedFile,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common'
 import { FileInterceptor } from '@nestjs/platform-express'
+import { Request } from 'express'
 
 interface MulterFile {
   fieldname: string
@@ -23,7 +25,7 @@ interface MulterFile {
   buffer: Buffer
   size: number
 }
-import { AdminGuard } from '../auth/guards/admin.guard'
+import { AuthSessionGuard } from '../auth/guards/auth-session.guard'
 import { QuizService } from './quiz.service'
 import { QuizImportService } from './quiz-import.service'
 import { CreateQuizDto } from './dto/create-quiz.dto'
@@ -43,7 +45,7 @@ const ALLOWED_IMPORT_MIMETYPES = new Set([
   'application/octet-stream',
 ])
 
-@UseGuards(AdminGuard)
+@UseGuards(AuthSessionGuard)
 @Controller('quiz')
 export class QuizController {
   constructor(
@@ -54,29 +56,39 @@ export class QuizController {
   // ─── Quiz ─────────────────────────────────────────────────────────────────
 
   @Post()
-  createQuiz(@Body() dto: CreateQuizDto) {
-    return this.quizService.createQuiz(dto)
+  createQuiz(@Body() dto: CreateQuizDto, @Req() req: Request) {
+    // If user is OWNER, enforce their areaName
+    const areaName = req.session.userRole === 'ADMIN' ? dto.areaName : req.session.userAreaName;
+    return this.quizService.createQuiz({ ...dto, areaName });
   }
 
   @Get()
-  listQuizzes() {
-    return this.quizService.listQuizzes()
+  listQuizzes(@Req() req: Request) {
+    const userRole = req.session.userRole!;
+    const areaName = req.session.userAreaName || null;
+    return this.quizService.listQuizzes(userRole, areaName);
   }
 
   @Get(':id')
-  getQuiz(@Param('id') id: string) {
-    return this.quizService.getQuiz(id)
+  getQuiz(@Param('id') id: string, @Req() req: Request) {
+    const userRole = req.session.userRole!;
+    const areaName = req.session.userAreaName;
+    return this.quizService.getQuiz(id, userRole, areaName)
   }
 
   @Patch(':id')
-  updateQuiz(@Param('id') id: string, @Body() dto: UpdateQuizDto) {
-    return this.quizService.updateQuiz(id, dto)
+  updateQuiz(@Param('id') id: string, @Body() dto: UpdateQuizDto, @Req() req: Request) {
+    const userRole = req.session.userRole!;
+    const areaName = req.session.userAreaName;
+    return this.quizService.updateQuiz(id, dto, userRole, areaName)
   }
 
   @Delete(':id')
   @HttpCode(200)
-  deleteQuiz(@Param('id') id: string) {
-    return this.quizService.deleteQuiz(id)
+  deleteQuiz(@Param('id') id: string, @Req() req: Request) {
+    const userRole = req.session.userRole!;
+    const areaName = req.session.userAreaName;
+    return this.quizService.deleteQuiz(id, userRole, areaName)
   }
 
   // ─── Teams ────────────────────────────────────────────────────────────────

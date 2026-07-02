@@ -175,6 +175,15 @@ export interface SessionCache {
 
   // Clue Reveal specific state (only populated when gameMode === 'clue_reveal')
   clueReveal?: ClueRevealState
+
+  // Sudden Victory tiebreaker state
+  suddenVictory?: SuddenVictoryState
+}
+
+export interface SuddenVictoryState {
+  tiedTeamIds: string[]
+  question: import('@apoquiz/shared-types').Question
+  timerHandle: ReturnType<typeof setTimeout> | null
 }
 
 // Module-scoped singleton — all gateway methods share this Map

@@ -13,6 +13,7 @@ import { WinnerScreen } from '@/components/game/WinnerScreen'
 import { GoodbyeScreen } from '@/components/game/GoodbyeScreen'
 import { UCRaceScreen } from '@/components/game/UCRaceScreen'
 import { AnswerRevealScreen } from '@/components/game/AnswerRevealScreen'
+import { SuddenVictoryIntroScreen } from '@/components/game/SuddenVictoryIntroScreen'
 import { cn } from '@/lib/utils'
 import { soundManager } from '@/lib/sound'
 import { useSocketStore } from '@/stores/useSocketStore'
@@ -69,6 +70,7 @@ export function ScreenClient(): React.ReactElement {
     rulesOverlay,
     ucReviewOverlay,
     ucAudioPlay,
+    suddenVictoryIntroData,
   } = useScreenStore()
 
   const [floatingEmojis, setFloatingEmojis] = useState<FloatingEmoji[]>([])
@@ -1684,6 +1686,13 @@ export function ScreenClient(): React.ReactElement {
               </div>
             </motion.div>
           )}
+
+        {/* ── SUDDEN VICTORY INTRO ────────────────────────────────────── */}
+        {status === SessionStatus.SUDDEN_VICTORY_INTRO && suddenVictoryIntroData && (
+          <motion.div key="sv-intro" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex-1">
+            <SuddenVictoryIntroScreen tiedTeams={suddenVictoryIntroData.tiedTeams} />
+          </motion.div>
+        )}
 
         {/* ── ROUND SUMMARY ───────────────────────────────────────────── */}
         {status === SessionStatus.ROUND_SUMMARY && roundSummary && (

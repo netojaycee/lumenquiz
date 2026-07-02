@@ -628,6 +628,37 @@ export function AudienceClient(): React.ReactElement {
             </motion.div>
           )}
 
+          {/* ── SUDDEN VICTORY INTRO ─────────────────────────────────────── */}
+          {status === ('sudden_victory_intro' as SessionStatus) && (
+            <motion.div
+              key="sv-intro-audience"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0 }}
+              className="flex flex-1 flex-col items-center justify-center gap-6 px-6 py-8 text-center"
+            >
+              <motion.div
+                animate={{ opacity: [0.5, 1, 0.5] }}
+                transition={{ repeat: Infinity, duration: 2 }}
+                className="text-6xl"
+              >
+                ⚡
+              </motion.div>
+              <div>
+                <p className="text-[10px] font-black tracking-[0.4em] uppercase text-red-400/60 mb-1">Tiebreaker</p>
+                <h2 className="text-3xl font-black text-white">Sudden Victory</h2>
+                <p className="text-white/40 text-sm mt-2">One question — first correct answer wins!</p>
+              </div>
+              <motion.p
+                animate={{ opacity: [0, 1, 0] }}
+                transition={{ repeat: Infinity, duration: 1.8, delay: 0.5 }}
+                className="text-red-400/50 text-xs font-black tracking-[0.3em] uppercase"
+              >
+                Stand by…
+              </motion.p>
+            </motion.div>
+          )}
+
           {/* ── ROUND SUMMARY ────────────────────────────────────────────── */}
           {status === SessionStatus.ROUND_SUMMARY && roundSummary && (
             <motion.div
@@ -636,6 +667,36 @@ export function AudienceClient(): React.ReactElement {
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0 }}
             >
+              {/* My audience position this round */}
+              {(() => {
+                const myEntry = roundSummary.audienceLeaderboard.find((a) => a.memberId === audienceId)
+                if (!myEntry) return null
+                return (
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.92 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    transition={{ delay: 0.1 }}
+                    className="mb-5 flex items-center gap-4 rounded-2xl border-2 border-[#F59E0B]/50 bg-[#F59E0B]/10 px-5 py-4"
+                    style={{ boxShadow: '0 0 24px rgba(245,158,11,0.12)' }}
+                  >
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[9px] font-black tracking-[0.3em] uppercase text-[#F59E0B]/60 mb-0.5">
+                        Your Position
+                      </p>
+                      <p className="text-white font-black text-base truncate">{fullName}</p>
+                    </div>
+                    <div className="text-right flex-shrink-0">
+                      <p className="text-3xl font-black text-[#F59E0B] tabular-nums leading-none">
+                        #{myEntry.rank}
+                      </p>
+                      <p className="text-[#F59E0B]/50 text-xs font-bold tabular-nums mt-0.5">
+                        {myEntry.totalPoints} pts
+                      </p>
+                    </div>
+                  </motion.div>
+                )
+              })()}
+
               <div className="mb-5">
                 <h2 className="text-xl font-black text-white">
                   {roundSummary.roundName ?? 'Round'} Over
@@ -667,33 +728,58 @@ export function AudienceClient(): React.ReactElement {
                   ))}
               </div>
 
-              {roundSummary.audienceLeaderboard.length > 0 && (
-                <>
-                  <p className="text-white/25 text-xs tracking-widest uppercase font-black mb-3">
-                    Audience Leaderboard
-                  </p>
-                  <div className="space-y-2">
-                    {roundSummary.audienceLeaderboard.slice(0, 5).map((a, i) => (
-                      <motion.div
-                        key={a.memberId}
-                        initial={{ opacity: 0, x: -16 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        transition={{ delay: 0.4 + i * 0.07 }}
-                        className={cn(
-                          'flex items-center gap-3 rounded-2xl border p-3 text-sm',
-                          a.memberId === audienceId
-                            ? 'border-[#F59E0B]/40 bg-[#F59E0B]/10 text-[#F59E0B]'
-                            : 'border-white/8 bg-white/[0.02] text-white',
-                        )}
-                      >
-                        <span className="text-white/30 w-5 text-xs font-mono">#{a.rank}</span>
-                        <span className="flex-1 font-semibold">{a.nickname}</span>
-                        <span className="font-black tabular-nums">{a.totalPoints}</span>
-                      </motion.div>
-                    ))}
-                  </div>
-                </>
-              )}
+              {roundSummary.audienceLeaderboard.length > 0 && (() => {
+                const top5 = roundSummary.audienceLeaderboard.slice(0, 5)
+                const myEntry = roundSummary.audienceLeaderboard.find((a) => a.memberId === audienceId)
+                const myEntryInTop5 = top5.some((a) => a.memberId === audienceId)
+                return (
+                  <>
+                    <p className="text-white/25 text-xs tracking-widest uppercase font-black mb-3">
+                      Audience Leaderboard
+                    </p>
+                    <div className="space-y-2">
+                      {top5.map((a, i) => (
+                        <motion.div
+                          key={a.memberId}
+                          initial={{ opacity: 0, x: -16 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          transition={{ delay: 0.4 + i * 0.07 }}
+                          className={cn(
+                            'flex items-center gap-3 rounded-2xl border p-3 text-sm',
+                            a.memberId === audienceId
+                              ? 'border-[#F59E0B]/40 bg-[#F59E0B]/10 text-[#F59E0B]'
+                              : 'border-white/8 bg-white/[0.02] text-white',
+                          )}
+                        >
+                          <span className="text-white/30 w-5 text-xs font-mono">#{a.rank}</span>
+                          <span className="flex-1 font-semibold truncate">{a.nickname}</span>
+                          <span className="font-black tabular-nums">{a.totalPoints}</span>
+                        </motion.div>
+                      ))}
+                      {/* Show user's entry if they're outside the top 5 */}
+                      {!myEntryInTop5 && myEntry && (
+                        <>
+                          <div className="flex items-center gap-2 py-1">
+                            <div className="flex-1 h-px bg-white/[0.06]" />
+                            <span className="text-white/20 text-[10px] font-bold">⋯</span>
+                            <div className="flex-1 h-px bg-white/[0.06]" />
+                          </div>
+                          <motion.div
+                            initial={{ opacity: 0, x: -16 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            transition={{ delay: 0.75 }}
+                            className="flex items-center gap-3 rounded-2xl border border-[#F59E0B]/40 bg-[#F59E0B]/10 p-3 text-sm text-[#F59E0B]"
+                          >
+                            <span className="w-5 text-xs font-mono">#{myEntry.rank}</span>
+                            <span className="flex-1 font-semibold truncate">{myEntry.nickname}</span>
+                            <span className="font-black tabular-nums">{myEntry.totalPoints}</span>
+                          </motion.div>
+                        </>
+                      )}
+                    </div>
+                  </>
+                )
+              })()}
             </motion.div>
           )}
 
@@ -777,18 +863,36 @@ export function AudienceClient(): React.ReactElement {
                 )
               )}
 
-              {audienceId && (
-                <motion.div
-                  initial={{ opacity: 0, y: 12 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.7 }}
-                  className="w-full rounded-2xl border border-white/8 bg-white/[0.04] px-6 py-5 text-center"
-                >
-                  <p className="text-white/25 text-xs font-bold uppercase tracking-widest mb-1">Your final score</p>
-                  <p className="text-4xl font-black tabular-nums text-[#F59E0B]">{totalPoints}</p>
-                  {rank != null && <p className="text-white/30 text-xs mt-1">Rank #{rank}</p>}
-                </motion.div>
-              )}
+              {audienceId && (() => {
+                const myFinalEntry = sessionEndData.audienceLeaderboard.find((a) => a.memberId === audienceId)
+                if (!myFinalEntry) return null
+                const isWinner = myFinalEntry.rank === 1
+                return (
+                  <motion.div
+                    initial={{ opacity: 0, y: 12 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.7 }}
+                    className="w-full rounded-2xl border-2 px-6 py-5 text-center"
+                    style={{
+                      borderColor: isWinner ? '#F59E0B' : 'rgba(255,255,255,0.1)',
+                      backgroundColor: isWinner ? 'rgba(245,158,11,0.1)' : 'rgba(255,255,255,0.03)',
+                      boxShadow: isWinner ? '0 0 30px rgba(245,158,11,0.15)' : undefined,
+                    }}
+                  >
+                    <p className="text-xs font-bold uppercase tracking-widest mb-2"
+                       style={{ color: isWinner ? 'rgba(245,158,11,0.6)' : 'rgba(255,255,255,0.25)' }}>
+                      Your Final Standing
+                    </p>
+                    <p className="text-5xl font-black tabular-nums text-[#F59E0B] leading-none">
+                      #{myFinalEntry.rank}
+                    </p>
+                    <p className="text-2xl font-black tabular-nums text-white mt-2">{myFinalEntry.totalPoints} pts</p>
+                    {isWinner && (
+                      <p className="text-[#F59E0B] font-black text-sm mt-1.5">🏆 Audience Champion!</p>
+                    )}
+                  </motion.div>
+                )
+              })()}
             </motion.div>
           )}
 

@@ -71,11 +71,16 @@ export class SessionService {
       const label = round.name ?? `Round ${round.order}`
       const mode = round.gameMode
 
-      // Collective modes: all teams answer same questions
+      // Collective modes: all teams answer same questions.
+      // Blitz requires 3 extra questions above questionCount so the system can
+      // draw from them for a Sudden Victory tiebreaker round if needed.
       if (mode === 'blitz' || mode === 'clue_reveal') {
-        if (actual < needed) {
+        const minRequired = mode === 'blitz' ? needed + 3 : needed
+        if (actual < minRequired) {
           errors.push(
-            `"${label}" (${mode.replace('_', ' ')}) needs ${needed} question${needed !== 1 ? 's' : ''} — only ${actual} added`,
+            mode === 'blitz'
+              ? `"${label}" (blitz) needs ${minRequired} questions (${needed} for the round + 3 reserve for Sudden Victory) — only ${actual} added`
+              : `"${label}" (clue reveal) needs ${needed} question${needed !== 1 ? 's' : ''} — only ${actual} added`,
           )
         }
       }
@@ -248,9 +253,7 @@ export class SessionService {
       include: {
         quiz: { select: { id: true, name: true } },
         sessionTeams: {
-          include: {
-            team: { select: { id: true, name: true, color: true } },
-          },
+          include: { team: { select: { id: true, name: true, color: true } } },
           orderBy: { score: 'desc' },
         },
         audienceMembers: {
@@ -261,19 +264,31 @@ export class SessionService {
     })
     if (!session) throw new NotFoundException(`Session ${id} not found`)
 
-    const teamAnswers = await this.prisma.teamAnswer.findMany({
-      where: { sessionId: id },
-      include: {
-        team: { select: { id: true, name: true } },
-        question: { select: { id: true, text: true, roundId: true } },
-      },
-    })
+    const [teamAnswers, rounds] = await Promise.all([
+      this.prisma.teamAnswer.findMany({
+        where: { sessionId: id },
+        include: { team: { select: { id: true, name: true, color: true } } },
+      }),
+      this.prisma.round.findMany({
+        where: { quizId: session.quizId, deletedAt: null },
+        include: {
+          questions: {
+            where: { deletedAt: null },
+            include: { options: true },
+            orderBy: { order: 'asc' },
+          },
+        },
+        orderBy: { order: 'asc' },
+      }),
+    ])
+
+    const answeredQuestionIds = new Set(teamAnswers.map((a) => a.questionId))
 
     const teamStats = session.sessionTeams.map((st) => {
       const answers = teamAnswers.filter((a) => a.teamId === st.teamId)
       const correct = answers.filter((a) => a.isCorrect).length
       const wrong = answers.filter((a) => !a.isCorrect).length
-      const fastest = answers
+      const fastestCorrect = answers
         .filter((a) => a.isCorrect)
         .sort((a, b) => b.timeRemaining - a.timeRemaining)[0]
 
@@ -287,10 +302,46 @@ export class SessionService {
         answeredCorrect: correct,
         answeredWrong: wrong,
         unanswered: 0,
-        fastestAnswerMs: fastest?.timeRemaining ?? null,
+        fastestAnswerMs: fastestCorrect?.timeRemaining ?? null,
         accuracy: answers.length > 0 ? Math.round((correct / answers.length) * 100) : 0,
       }
     })
+
+    // Only include rounds that had at least one question answered in this session
+    const roundDetail = rounds
+      .filter((r) => r.questions.some((q) => answeredQuestionIds.has(q.id)))
+      .map((r) => ({
+        id: r.id,
+        name: r.name,
+        gameMode: r.gameMode,
+        order: r.order,
+        timerSeconds: r.timerSeconds,
+        pointsPerQuestion: r.pointsPerQuestion,
+        questions: r.questions
+          .filter((q) => answeredQuestionIds.has(q.id))
+          .map((q) => {
+            const qAnswers = teamAnswers.filter((a) => a.questionId === q.id)
+            return {
+              id: q.id,
+              order: q.order,
+              text: q.text,
+              type: q.type,
+              correctAnswer: q.correctAnswer,
+              points: q.points,
+              options: q.options.map((o) => ({ label: o.label, text: o.text, isCorrect: o.isCorrect })),
+              teamAnswers: qAnswers.map((a) => ({
+                teamId: a.teamId,
+                teamName: a.team.name,
+                teamColor: a.team.color,
+                submittedAnswer: a.submittedAnswer,
+                isCorrect: a.isCorrect,
+                pointsEarned: a.pointsEarned,
+                timeRemaining: a.timeRemaining,
+                submittedAt: a.submittedAt,
+              })),
+            }
+          }),
+      }))
 
     return {
       session: {
@@ -302,6 +353,7 @@ export class SessionService {
         endedAt: session.endedAt,
       },
       teams: teamStats,
+      rounds: roundDetail,
       audience: {
         totalMembers: session.audienceMembers.length,
         leaderboard: session.audienceMembers.slice(0, 20),
@@ -312,12 +364,56 @@ export class SessionService {
   async exportResultsCsv(id: string): Promise<string> {
     const results = await this.getResults(id)
 
-    const header = ['Rank', 'Team', 'Score', 'Correct', 'Wrong', 'Accuracy'].join(',')
-    const rows = results.teams.map((t, i) =>
-      [i + 1, `"${t.teamName}"`, t.totalScore, t.answeredCorrect, t.answeredWrong, `${t.accuracy}%`].join(','),
-    )
+    const lines: string[] = []
 
-    return [header, ...rows].join('\n')
+    lines.push('=== SESSION RESULTS ===')
+    lines.push(`Quiz,${results.session.quizName}`)
+    lines.push(`Session Code,${results.session.sessionCode ?? 'N/A'}`)
+    lines.push(`Date,${new Date(results.session.createdAt).toLocaleString()}`)
+    lines.push(`Ended,${results.session.endedAt ? new Date(results.session.endedAt).toLocaleString() : 'N/A'}`)
+    lines.push('')
+
+    lines.push('=== TEAM STANDINGS ===')
+    lines.push(['Rank', 'Team', 'Total Score', 'Correct', 'Wrong', 'Accuracy'].join(','))
+    results.teams.forEach((t, i) => {
+      lines.push([i + 1, `"${t.teamName}"`, t.totalScore, t.answeredCorrect, t.answeredWrong, `${t.accuracy}%`].join(','))
+    })
+    lines.push('')
+
+    lines.push('=== QUESTION BREAKDOWN ===')
+    lines.push(['Round', 'Q#', 'Question', 'Team', 'Submitted Answer', 'Correct Answer', 'Result', 'Points', 'Time Remaining (ms)'].join(','))
+    for (const round of results.rounds) {
+      const roundLabel = round.name ?? `Round ${round.order}`
+      for (const q of round.questions) {
+        for (const a of q.teamAnswers) {
+          lines.push([
+            `"${roundLabel}"`,
+            q.order,
+            `"${q.text.replace(/"/g, '""')}"`,
+            `"${a.teamName}"`,
+            `"${a.submittedAnswer}"`,
+            `"${q.correctAnswer}"`,
+            a.isCorrect ? 'Correct' : 'Wrong',
+            a.pointsEarned,
+            a.timeRemaining,
+          ].join(','))
+        }
+        if (q.teamAnswers.length === 0) {
+          lines.push([`"${roundLabel}"`, q.order, `"${q.text.replace(/"/g, '""')}"`, '(no answers)', '', `"${q.correctAnswer}"`, '', '', ''].join(','))
+        }
+      }
+    }
+    lines.push('')
+
+    if (results.audience.leaderboard.length > 0) {
+      lines.push('=== AUDIENCE LEADERBOARD ===')
+      lines.push(['Rank', 'Name', 'Points'].join(','))
+      results.audience.leaderboard.forEach((e, i) => {
+        lines.push([i + 1, `"${e.fullName}"`, e.totalPoints].join(','))
+      })
+    }
+
+    return lines.join('\n')
   }
 
   // ─── resetTeamSlot — admin override to re-seat a team on a new device ─────────

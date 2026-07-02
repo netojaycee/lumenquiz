@@ -26,6 +26,7 @@ import type {
   ClueStatePayload,
   ClueNextPayload,
   ClueAnswerResultPayload,
+  SuddenVictoryIntroPayload,
 } from '@apoquiz/socket-events'
 import { UserRole, SessionStatus } from '@apoquiz/shared-types'
 import { getSocketUrl } from '@/lib/api'
@@ -119,7 +120,7 @@ export const useSocketStore = create<SocketStore>((set, get) => ({
 
     socket.on(SERVER_EVENTS.ROUND_START, (data: RoundStartPayload) => {
       ss()?.setRoundStart(data)
-      ts()?.setRoundStart()
+      ts()?.setRoundStart(data)
       au()?.setRoundStart()
     })
 
@@ -302,6 +303,12 @@ export const useSocketStore = create<SocketStore>((set, get) => ({
     socket.on(SERVER_EVENTS.CLUE_ANSWER_RESULT, (data: ClueAnswerResultPayload) => {
       ss()?.applyClueAnswerResult(data)
       ts()?.applyClueAnswerResult?.(data)
+    })
+
+    socket.on(SERVER_EVENTS.SUDDEN_VICTORY_INTRO, (data: SuddenVictoryIntroPayload) => {
+      ss()?.setSuddenVictoryIntro(data)
+      ts()?.setSuddenVictoryIntro?.(data)
+      au()?.setSuddenVictoryIntro?.(data)
     })
 
     socket.on(SERVER_EVENTS.SCREEN_QR_SHOW, (data: { dataURL: string; url: string; ip: string }) => {
