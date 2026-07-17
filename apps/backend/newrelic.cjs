@@ -10,7 +10,7 @@
  */
 exports.config = {
   app_name: [
-    `${process.env.NEW_RELIC_APP_NAME || 'apoquiz'} (${process.env.NODE_ENV || 'development'})`,
+    `${process.env.NEW_RELIC_APP_NAME || 'afmQuiz'} (${process.env.NODE_ENV || 'development'})`,
   ],
   license_key: process.env.NEW_RELIC_LICENSE_KEY,
   logging: {
