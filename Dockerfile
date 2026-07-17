@@ -66,6 +66,11 @@ COPY --from=build --chown=apoquiz:apoquiz /app/apps/backend/prisma apps/backend/
 COPY --from=build --chown=apoquiz:apoquiz /app/apps/backend/prisma-pg apps/backend/prisma-pg
 COPY --from=build --chown=apoquiz:apoquiz /app/apps/backend/prisma.config.ts apps/backend/prisma.config.ts
 
+# New Relic agent config — a source file (not a build artifact), so copy from
+# the build context. Sits next to the running app; the agent auto-discovers it
+# from the WORKDIR below.
+COPY --chown=apoquiz:apoquiz apps/backend/newrelic.cjs apps/backend/newrelic.cjs
+
 # Prisma 7 requires DATABASE_URL to be present while generating the client.
 # This build-time placeholder is not used at runtime and does not create or
 # connect to a database.
@@ -82,4 +87,5 @@ WORKDIR /app/apps/backend
 EXPOSE 3000
 
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
-CMD ["node", "dist/main.js"]
+# -r newrelic preloads the APM agent before any app code (incl. reflect-metadata).
+CMD ["node", "-r", "newrelic", "dist/main.js"]
