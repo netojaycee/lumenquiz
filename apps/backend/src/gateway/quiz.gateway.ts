@@ -51,7 +51,9 @@ import {
 } from '@apoquiz/game-engine'
 import type { GameModeStrategy } from '@apoquiz/game-engine'
 import { NetworkService } from '../network/network.service'
+import { UseInterceptors } from '@nestjs/common'
 import { noticeError, runInBackgroundTransaction } from '../common/observability/newrelic'
+import { NewRelicWsInterceptor } from '../common/observability/newrelic-ws.interceptor'
 
 // ─── Local types ──────────────────────────────────────────────────────────────
 
@@ -99,6 +101,7 @@ const voteThrottleTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 // ─── Gateway ──────────────────────────────────────────────────────────────────
 
+@UseInterceptors(NewRelicWsInterceptor)
 @WebSocketGateway({ cors: { origin: '*' }, transports: ['websocket', 'polling'] })
 export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()
@@ -2939,7 +2942,7 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
    * scheduled the timer finished long before this runs.
    */
   private runDetached(name: string, sessionId: string, task: () => void | Promise<void>): void {
-    runInBackgroundTransaction(name, { sessionId }, () => {
+    runInBackgroundTransaction(name, 'Timer', { sessionId }, () => {
       try {
         const result = task()
 
