@@ -56,13 +56,14 @@ export function noticeError(error: Error, attributes: CustomAttributes = {}): vo
  */
 export function runInBackgroundTransaction(
   name: string,
+  group: string,
   attributes: CustomAttributes,
   task: () => void | Promise<void>,
 ): void {
   const agent = getAgent()
   if (!agent) return void task()
 
-  agent.startBackgroundTransaction(name, 'Timer', () => {
+  agent.startBackgroundTransaction(name, group, () => {
     const transaction = agent.getTransaction()
     agent.addCustomAttributes(attributes)
 
