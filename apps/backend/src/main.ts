@@ -8,11 +8,41 @@ import FileStoreFactory from 'session-file-store'
 import { AppModule } from './app.module'
 import { GlobalExceptionFilter } from './common/filters/http-exception.filter'
 import { StaticMiddleware } from './static/static.middleware'
+import { flushTelemetry, noticeError } from './common/observability/newrelic'
 import { GAME_CONSTANTS } from '@apoquiz/shared-types'
 
 const FileStore = FileStoreFactory(session)
 
+function toError(value: unknown): Error {
+  return value instanceof Error ? value : new Error(String(value))
+}
+
+/**
+ * Node 24 terminates the process on an unhandled rejection by default, which
+ * would drop every connected client and lose the in-memory session cache. A
+ * rejected promise is nearly always one failed query, so we log it and keep
+ * serving. An uncaught exception means genuinely unknown state — report it,
+ * then exit and let the container restart us.
+ */
+function registerProcessErrorHandlers(): void {
+  process.on('unhandledRejection', (reason) => {
+    const error = toError(reason)
+
+    console.error('[process] unhandled promise rejection —', error)
+    noticeError(error, { source: 'unhandledRejection' })
+  })
+
+  process.on('uncaughtException', (error) => {
+    console.error('[process] uncaught exception, shutting down —', error)
+    noticeError(error, { source: 'uncaughtException' })
+
+    flushTelemetry(() => process.exit(1))
+  })
+}
+
 async function bootstrap(): Promise<void> {
+  registerProcessErrorHandlers()
+
   const app = await NestFactory.create(AppModule)
 
   app.setGlobalPrefix('api')
@@ -44,7 +74,8 @@ async function bootstrap(): Promise<void> {
     })
   }
 
-  app.use("/api",
+  app.use(
+    '/api',
     session({
       store: new FileStore({
         path: sessionsDir,
