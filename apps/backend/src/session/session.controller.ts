@@ -15,7 +15,8 @@ import { diskStorage } from 'multer'
 import * as path from 'path'
 import * as fs from 'fs'
 import { Response } from 'express'
-import { AdminGuard } from '../auth/guards/admin.guard'
+// import { AdminGuard } from '../auth/guards/admin.guard'
+import { AuthSessionGuard } from '../auth/guards/auth-session.guard'
 import { SessionService } from './session.service'
 
 // ─── Disk-based UC audio store ────────────────────────────────────────────────
@@ -105,7 +106,7 @@ export class SessionPublicController {
   }
 }
 
-@UseGuards(AdminGuard)
+@UseGuards(AuthSessionGuard)
 @Controller()
 export class SessionController {
   constructor(private readonly sessionService: SessionService) {}

@@ -63,10 +63,10 @@ export class QuizController {
   }
 
   @Get()
-  listQuizzes(@Req() req: Request) {
+  listQuizzes(@Req() req: Request, @Query('area') area?: string) {
     const userRole = req.session.userRole!;
     const areaName = req.session.userAreaName || null;
-    return this.quizService.listQuizzes(userRole, areaName);
+    return this.quizService.listQuizzes(userRole, areaName, area);
   }
 
   @Get(':id')

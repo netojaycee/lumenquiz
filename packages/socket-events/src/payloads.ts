@@ -284,6 +284,7 @@ export interface UCCurrentQuestion {
   id: string
   text: string
   correctAnswer: string // shown to moderator only; projector ignores this field
+  aliases: string[]
 }
 
 // export interface UCStatePayload {

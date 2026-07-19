@@ -19,7 +19,7 @@ export default function ForgotPasswordPage(): React.ReactElement {
     setError(null)
     setMessage(null)
     try {
-      await api.post('/auth/forgot-password', { email })
+      await api.post('/auth/forgot-password', { email, appOrigin: window.location.origin })
       setMessage('If an account exists for this email, we have sent password reset instructions.')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong')

@@ -51,6 +51,7 @@ export class QuizImportService {
             text: q.text,
             correctAnswer: q.correctAnswer,
             aliases: JSON.stringify(q.aliases),
+            clues: JSON.stringify(q.clues),
             difficulty: q.difficulty,
             points: q.points ?? defaultPoints,
           },
@@ -84,7 +85,8 @@ export class QuizImportService {
     const difficulty = (get('difficulty') || 'medium').toLowerCase()
     const pointsRaw = get('points')
     const aliasesRaw = get('aliases')
-    const correctOption = (get('correctOption') || get('correct_option') || get('correctoption') || '').toUpperCase()
+    const cluesRaw = get('clues')
+    const correctOption = (get('correctOption') || get('correctAnswer') || get('correct_option') || get('correctoption') || '').toUpperCase()
 
     if (!type) errors.push(`Row ${rowNum}: missing "type"`)
     else if (!VALID_TYPES.includes(type)) errors.push(`Row ${rowNum}: invalid type "${type}" — must be one of: ${VALID_TYPES.join(', ')}`)
@@ -98,6 +100,10 @@ export class QuizImportService {
 
     const aliases = aliasesRaw
       ? aliasesRaw.split(',').map((s) => s.trim()).filter(Boolean)
+      : []
+
+    const clues = cluesRaw
+      ? cluesRaw.split('|').map((s) => s.trim()).filter(Boolean)
       : []
 
     let options: ParsedImportQuestion['options'] = null
@@ -137,6 +143,7 @@ export class QuizImportService {
       text,
       correctAnswer: resolvedCorrectAnswer,
       aliases,
+      clues,
       difficulty: VALID_DIFFICULTIES.includes(difficulty) ? difficulty : 'medium',
       points,
       options,

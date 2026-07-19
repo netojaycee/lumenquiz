@@ -3202,6 +3202,7 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
             id: currentQuestion.id,
             text: currentQuestion.text,
             correctAnswer: currentQuestion.correctAnswer,
+            aliases: currentQuestion.aliases ?? [],
           }
         : null,
 

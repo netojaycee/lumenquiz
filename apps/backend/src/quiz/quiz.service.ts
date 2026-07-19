@@ -46,10 +46,12 @@ export class QuizService {
     }
   }
 
-  async listQuizzes(userRole: string, areaName: string | null) {
-    // If not admin, strictly scope list to their areaName
+  async listQuizzes(userRole: string, areaName: string | null, areaFilter?: string | null) {
     const whereCondition: any = { deletedAt: null }
-    if (userRole !== 'ADMIN') {
+    if (userRole === 'ADMIN') {
+      // areaFilter='__national__' or undefined → show national (null); any other value → show that area
+      whereCondition.areaName = (areaFilter && areaFilter !== '__national__') ? areaFilter : null
+    } else {
       whereCondition.areaName = areaName
     }
 
@@ -73,7 +75,9 @@ export class QuizService {
 
   async getQuiz(id: string, userRole?: string, areaName?: string | null) {
     const whereCondition: any = { id, deletedAt: null }
-    if (userRole && userRole !== 'ADMIN') {
+    if (userRole === 'ADMIN') {
+      whereCondition.areaName = null
+    } else if (userRole) {
       whereCondition.areaName = areaName
     }
 
