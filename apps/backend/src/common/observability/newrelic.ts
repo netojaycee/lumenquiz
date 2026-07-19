@@ -10,8 +10,19 @@
 
 type CustomAttributes = Record<string, string | number | boolean>
 
+interface TransactionHandle {
+  end: () => void
+}
+
 interface NewRelicApi {
   noticeError: (error: Error, customAttributes?: CustomAttributes) => void
+  addCustomAttributes: (attributes: CustomAttributes) => void
+  getTransaction: () => TransactionHandle
+  startBackgroundTransaction: (
+    name: string,
+    group: string,
+    handle: () => void | Promise<void>,
+  ) => void
   shutdown: (
     options: { collectPendingData?: boolean; timeout?: number },
     callback: () => void,
@@ -30,6 +41,40 @@ function getAgent(): NewRelicApi | null {
 
 export function noticeError(error: Error, attributes: CustomAttributes = {}): void {
   getAgent()?.noticeError(error, attributes)
+}
+
+/**
+ * Runs `task` as its own New Relic background transaction.
+ *
+ * Timer callbacks fire long after the socket handler that scheduled them has
+ * returned, so they have no transaction to attach to and their queries and
+ * errors would otherwise go unreported. Each one becomes a separate transaction
+ * rather than being folded into the handler, whose duration would then include
+ * the whole quiz timer.
+ *
+ * Without a running agent this just calls `task` directly.
+ */
+export function runInBackgroundTransaction(
+  name: string,
+  attributes: CustomAttributes,
+  task: () => void | Promise<void>,
+): void {
+  const agent = getAgent()
+  if (!agent) return void task()
+
+  agent.startBackgroundTransaction(name, 'Timer', () => {
+    const transaction = agent.getTransaction()
+    agent.addCustomAttributes(attributes)
+
+    const result = task()
+
+    if (result instanceof Promise) {
+      return result.finally(() => transaction.end())
+    }
+
+    transaction.end()
+    return undefined
+  })
 }
 
 /**
