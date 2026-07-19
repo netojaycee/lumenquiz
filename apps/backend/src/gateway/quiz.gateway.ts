@@ -51,7 +51,7 @@ import {
 } from '@apoquiz/game-engine'
 import type { GameModeStrategy } from '@apoquiz/game-engine'
 import { NetworkService } from '../network/network.service'
-import { noticeError } from '../common/observability/newrelic'
+import { noticeError, runInBackgroundTransaction } from '../common/observability/newrelic'
 
 // ─── Local types ──────────────────────────────────────────────────────────────
 
@@ -1400,7 +1400,7 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     cache.pausedAt = null
 
     cache.suddenVictory.timerHandle = setTimeout(() => {
-      this.runDetached('suddenVictoryTimer', () => {
+      this.runDetached('timer:sudden_victory_elapsed', sessionId, () => {
         if (cache.status !== SessionStatus.QUESTION_OPEN) return
         this.lockQuestion(sessionId, cache)
         this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.QUESTION_TIMER_ELAPSED)
@@ -1496,7 +1496,10 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       cache.pausedAt = null
       cache.remainingMsAtPause = null
       cache.questionTimerHandle = setTimeout(
-        () => this.runDetached('onTimerElapsed', () => this.onTimerElapsed(sessionId)),
+        () =>
+          this.runDetached('timer:question_elapsed', sessionId, () =>
+            this.onTimerElapsed(sessionId),
+          ),
         remaining,
       )
     }
@@ -1739,7 +1742,8 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
     if (cache.questionTimerHandle) clearTimeout(cache.questionTimerHandle)
     cache.questionTimerHandle = setTimeout(
-      () => this.runDetached('onTimerElapsed', () => this.onTimerElapsed(sessionId)),
+      () =>
+        this.runDetached('timer:question_elapsed', sessionId, () => this.onTimerElapsed(sessionId)),
       durationMs,
     )
 
@@ -1894,7 +1898,7 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     // Schedule server-side elapsed event — clients disable their submit button on receipt
     const bonusTeamIdForTimer = tb.bonusBuzzTeamId
     tb.bonusTimerHandle = setTimeout(() => {
-      this.runDetached('tileBlitzBonusTimer', () => {
+      this.runDetached('timer:tileblitz_bonus_elapsed', sessionId, () => {
         tb.bonusTimerHandle = null
         if (cache.status !== SessionStatus.BONUS_ANSWERING) return
         this.server
@@ -2184,7 +2188,7 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
     if (uc.timerHandle) clearTimeout(uc.timerHandle)
     uc.timerHandle = setTimeout(
-      () => this.runDetached('onUCTimerElapsed', () => this.onUCTimerElapsed(sessionId)),
+      () => this.runDetached('timer:uc_elapsed', sessionId, () => this.onUCTimerElapsed(sessionId)),
       durationMs,
     )
 
@@ -2642,7 +2646,7 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     if (cr.answeringTimerHandle) clearTimeout(cr.answeringTimerHandle)
     cr.answeringTimerHandle = setTimeout(
       () =>
-        this.runDetached('handleClueAnsweringTimeout', () =>
+        this.runDetached('timer:clue_answering_timeout', sessionId, () =>
           this.handleClueAnsweringTimeout(sessionId),
         ),
       answeringDurationMs,
@@ -2701,7 +2705,8 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       (round?.timerSeconds ?? GAME_CONSTANTS.CLUE_REVEAL_DEFAULT_CLUE_TIMER_SECONDS) * 1000
     cr.clueTimerDeadline = Date.now() + timerMs
     cr.clueTimerHandle = setTimeout(
-      () => this.runDetached('onClueTimerElapsed', () => this.onClueTimerElapsed(sessionId)),
+      () =>
+        this.runDetached('timer:clue_elapsed', sessionId, () => this.onClueTimerElapsed(sessionId)),
       timerMs,
     )
 
@@ -2774,7 +2779,7 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     const existingTimer = voteThrottleTimers.get(sessionId)
     if (existingTimer) clearTimeout(existingTimer)
     const timer = setTimeout(() => {
-      this.runDetached('audienceVoteThrottle', () => {
+      this.runDetached('timer:audience_vote_flush', sessionId, () => {
         voteThrottleTimers.delete(sessionId)
         const totalVotes = Object.values(cache.audienceVoteTally).reduce((s, v) => s + v, 0)
         this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.ROUND_VOTE_UPDATE, {
@@ -2895,7 +2900,8 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       clearTimeout(cache.questionTimerHandle)
     }
     cache.questionTimerHandle = setTimeout(
-      () => this.runDetached('onTimerElapsed', () => this.onTimerElapsed(sessionId)),
+      () =>
+        this.runDetached('timer:question_elapsed', sessionId, () => this.onTimerElapsed(sessionId)),
       durationMs,
     )
 
@@ -2923,23 +2929,29 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
   }
 
   /**
-   * Runs a timer callback that nobody awaits.
+   * Runs a timer callback that nobody awaits, as its own New Relic transaction.
    *
    * A bare `void somePromise()` inside setTimeout detaches the promise from any
    * catch, so one failed query would surface as an unhandled rejection and take
    * the whole backend down mid-quiz. Catching here keeps the failure scoped to
-   * the single timer that caused it.
+   * the single timer that caused it, and the surrounding transaction gives the
+   * callback's queries and errors somewhere to be reported — the handler that
+   * scheduled the timer finished long before this runs.
    */
-  private runDetached(name: string, task: () => void | Promise<void>): void {
-    try {
-      const result = task()
+  private runDetached(name: string, sessionId: string, task: () => void | Promise<void>): void {
+    runInBackgroundTransaction(name, { sessionId }, () => {
+      try {
+        const result = task()
 
-      if (result instanceof Promise) {
-        result.catch((error: unknown) => this.reportDetachedFailure(name, error))
+        if (result instanceof Promise) {
+          return result.catch((error: unknown) => this.reportDetachedFailure(name, error))
+        }
+      } catch (error) {
+        this.reportDetachedFailure(name, error)
       }
-    } catch (error) {
-      this.reportDetachedFailure(name, error)
-    }
+
+      return undefined
+    })
   }
 
   private reportDetachedFailure(name: string, error: unknown): void {
@@ -3422,7 +3434,8 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       (round?.timerSeconds ?? GAME_CONSTANTS.CLUE_REVEAL_DEFAULT_CLUE_TIMER_SECONDS) * 1000
     cr.clueTimerDeadline = Date.now() + timerMs
     cr.clueTimerHandle = setTimeout(
-      () => this.runDetached('onClueTimerElapsed', () => this.onClueTimerElapsed(sessionId)),
+      () =>
+        this.runDetached('timer:clue_elapsed', sessionId, () => this.onClueTimerElapsed(sessionId)),
       timerMs,
     )
 
@@ -3585,7 +3598,10 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       cr.clueTimerDeadline = Date.now() + timerMs
       if (cr.clueTimerHandle) clearTimeout(cr.clueTimerHandle)
       cr.clueTimerHandle = setTimeout(
-        () => this.runDetached('onClueTimerElapsed', () => this.onClueTimerElapsed(sessionId)),
+        () =>
+          this.runDetached('timer:clue_elapsed', sessionId, () =>
+            this.onClueTimerElapsed(sessionId),
+          ),
         timerMs,
       )
 
@@ -3627,7 +3643,8 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     cr.clueTimerDeadline = Date.now() + timerMs
     if (cr.clueTimerHandle) clearTimeout(cr.clueTimerHandle)
     cr.clueTimerHandle = setTimeout(
-      () => this.runDetached('onClueTimerElapsed', () => this.onClueTimerElapsed(sessionId)),
+      () =>
+        this.runDetached('timer:clue_elapsed', sessionId, () => this.onClueTimerElapsed(sessionId)),
       timerMs,
     )
 
@@ -4126,7 +4143,7 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       deadline,
       handle: setTimeout(
         () =>
-          this.runDetached('closeAudienceInteraction', () =>
+          this.runDetached('timer:audience_interaction_close', sessionId, () =>
             this.closeAudienceInteraction(sessionId, cache),
           ),
         durationMs,
