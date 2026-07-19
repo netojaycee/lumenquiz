@@ -31,6 +31,7 @@ export class NewRelicWsInterceptor implements NestInterceptor {
 
     return new Observable((subscriber) => {
       let unsubscribe = (): void => undefined
+      let finish = (): void => undefined
 
       // The handler only runs once next.handle() is subscribed to, so the
       // subscription has to happen inside the transaction callback — that is
@@ -42,6 +43,8 @@ export class NewRelicWsInterceptor implements NestInterceptor {
         { sessionId, role },
         () =>
           new Promise<void>((settled) => {
+            finish = settled
+
             const subscription = next.handle().subscribe({
               next: (value) => subscriber.next(value),
               error: (error: unknown) => {
@@ -65,7 +68,13 @@ export class NewRelicWsInterceptor implements NestInterceptor {
           }),
       )
 
-      return () => unsubscribe()
+      // Teardown can happen before the handler settles — a client disconnecting
+      // mid-flight, for instance. Resolving here as well means the transaction
+      // is always closed; resolving twice is a no-op.
+      return () => {
+        unsubscribe()
+        finish()
+      }
     })
   }
 }
