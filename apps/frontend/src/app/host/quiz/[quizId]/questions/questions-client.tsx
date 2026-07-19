@@ -118,6 +118,14 @@ export function QuestionsClient(): React.ReactElement {
     setSheetOpen(true)
   }
 
+  function parseJsonField<T>(value: unknown, fallback: T): T {
+    if (Array.isArray(value)) return value as T
+    if (typeof value === 'string' && value) {
+      try { return JSON.parse(value) as T } catch { /* ignore */ }
+    }
+    return fallback
+  }
+
   function openEdit(q: Question) {
     setEditQ(q)
     const isMCQ = q.type === QuestionType.MCQ
@@ -131,8 +139,8 @@ export function QuestionsClient(): React.ReactElement {
       difficulty:    q.difficulty,
       points:        q.points,
       correctAnswer: q.correctAnswer,
-      aliases:       Array.isArray(q.aliases) ? q.aliases.join(', ') : '',
-      clues:         Array.isArray(q.clues) && q.clues.length > 0 ? q.clues : ['', '', '', ''],
+      aliases:       parseJsonField<string[]>(q.aliases, []).join(', '),
+      clues:         (() => { const c = parseJsonField<string[]>(q.clues, []); return c.length > 0 ? c : ['', '', '', ''] })(),
       options:       opts,
     })
     setFormError(null)
@@ -291,12 +299,13 @@ export function QuestionsClient(): React.ReactElement {
   }
 
   function downloadTemplate() {
-    const header = 'type,text,correctAnswer,optionA,optionB,optionC,optionD,aliases,difficulty,points'
+    const header = 'type,text,correctAnswer,clues,optionA,optionB,optionC,optionD,aliases,difficulty,points'
     const rows = [
-      'mcq,"Who was the first king of Israel?",A,Saul,David,Solomon,Moses,"King Saul",medium,10',
-      'open,"Name the book with the shortest verse in the Bible.",John,,,,,"Jn, Gospel of John",easy,10',
-      'truefalse,"Goliath was a Philistine.",True,,,,,, easy,10',
-      'fillinblank,"Jesus was born in ___.","Bethlehem",,,,,, medium,10',
+      'mcq,"Who was the first king of Israel?",A,,"Saul","David","Solomon","Moses","King Saul",medium,10',
+      'open,"Name the book with the shortest verse in the Bible.",John,,,,,,,"Jn|Gospel of John",easy,10',
+      'open,"Name this city (Clue Reveal)","Bethlehem","City of David|Born here: Jesus|Tribe of Judah|Micah 5:2",,,,,"city of david|bethlem",medium,10',
+      'truefalse,"Goliath was a Philistine.",True,,,,,,,easy,10',
+      'fillinblank,"Jesus was born in ___.","Bethlehem",,,,,,,medium,10',
     ]
     const csv = [header, ...rows].join('\n')
     const blob = new Blob([csv], { type: 'text/csv' })

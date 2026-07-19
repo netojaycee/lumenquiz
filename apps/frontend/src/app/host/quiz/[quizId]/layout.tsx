@@ -88,8 +88,8 @@ export default function QuizWorkspaceLayout({ children }: { children: React.Reac
   return (
     <div className="min-h-full flex flex-col">
       {/* ── Workspace header ── */}
-      <div className="border-b border-border bg-surface px-6 py-4 flex-shrink-0">
-        <div className="flex items-center justify-between mb-4">
+      <div className="border-b border-border bg-surface px-4 py-4 flex-shrink-0">
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
           <div className="flex items-center gap-3 min-w-0">
             <Link href="/host" className="text-text-muted hover:text-white transition-colors flex-shrink-0">
               <ArrowLeft className="h-4 w-4" />
@@ -156,7 +156,7 @@ export default function QuizWorkspaceLayout({ children }: { children: React.Reac
         </div>
 
         {/* ── Tab navigation ── */}
-        <div className="flex gap-0.5 -mb-4 pb-0">
+        <div className="flex gap-0.5 -mb-4 pb-0 overflow-x-auto">
           {TABS.map((tab) => {
             const href = `${baseHref}${tab.path}`
             const isActive = tab.path === ''

@@ -10,6 +10,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
 import { Dialog } from '@/components/ui/dialog'
 import { api } from '@/lib/api'
+import { useHostStore } from '@/stores/useHostStore'
 import type { Quiz } from '@apoquiz/shared-types'
 import { QuizStatus } from '@apoquiz/shared-types'
 
@@ -17,6 +18,12 @@ import { QuizStatus } from '@apoquiz/shared-types'
 
 interface QuizListItem extends Quiz {
   _count?: { rounds: number; teams: number; sessions: number }
+}
+
+interface AreaItem {
+  id: string
+  name: string
+  status: string
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -38,6 +45,7 @@ const STATUS_LABEL: Record<string, string> = {
 
 export default function HostDashboardPage(): React.ReactElement {
   const router = useRouter()
+  const { user } = useHostStore()
   const [quizzes, setQuizzes] = useState<QuizListItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -47,8 +55,15 @@ export default function HostDashboardPage(): React.ReactElement {
   const [newName, setNewName] = useState('')
   const [newDescription, setNewDescription] = useState('')
   const [newDate, setNewDate] = useState('')
+  const [quizScope, setQuizScope] = useState<'national' | 'area'>('national')
+  const [quizAreaName, setQuizAreaName] = useState('')
+  const [areas, setAreas] = useState<AreaItem[]>([])
+  const [areasLoading, setAreasLoading] = useState(false)
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
+
+  // Admin area filter
+  const [filterArea, setFilterArea] = useState<string>('__national__')
 
   // Delete confirmation
   const [deleteId, setDeleteId] = useState<string | null>(null)
@@ -57,25 +72,50 @@ export default function HostDashboardPage(): React.ReactElement {
   // DEV seed
   const [seeding, setSeeding] = useState(false)
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (area?: string) => {
+    setLoading(true)
+    setError(null)
     try {
-      const data = await api.get<QuizListItem[]>('/quiz')
+      const query = user?.role === 'ADMIN' && area && area !== '__national__'
+        ? `/quiz?area=${encodeURIComponent(area)}`
+        : '/quiz'
+      const data = await api.get<QuizListItem[]>(query)
       setQuizzes(data.filter((q) => !q.deletedAt))
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load quizzes')
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [user?.role])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => { load(filterArea) }, [load, filterArea])
+
+  function handleAreaFilterChange(value: string) {
+    setFilterArea(value)
+    if (user?.role === 'ADMIN' && areas.length === 0) {
+      fetch('https://api.afmweca.org/afmchurches/api/v1/area')
+        .then((r) => r.json())
+        .then((json) => { if (json?.data?.data) setAreas(json.data.data) })
+        .catch(() => {})
+    }
+  }
+
+  // Pre-load areas for ADMIN on mount
+  useEffect(() => {
+    if (user?.role === 'ADMIN') {
+      fetch('https://api.afmweca.org/afmchurches/api/v1/area')
+        .then((r) => r.json())
+        .then((json) => { if (json?.data?.data) setAreas(json.data.data) })
+        .catch(() => {})
+    }
+  }, [user?.role])
 
   async function handleSeed() {
     if (!confirm('This will DELETE all existing data and create a fresh sample quiz. Continue?')) return
     setSeeding(true)
     try {
       await api.post('/dev/seed', {})
-      await load()
+      await load(filterArea)
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Seed failed')
     } finally {
@@ -87,20 +127,40 @@ export default function HostDashboardPage(): React.ReactElement {
     setNewName('')
     setNewDescription('')
     setNewDate('')
+    setQuizScope('national')
+    setQuizAreaName('')
     setCreateError(null)
     setDialogOpen(true)
+    if (user?.role === 'ADMIN' && areas.length === 0) {
+      setAreasLoading(true)
+      fetch('https://api.afmweca.org/afmchurches/api/v1/area')
+        .then((r) => r.json())
+        .then((json) => { if (json?.data?.data) setAreas(json.data.data) })
+        .catch(() => {})
+        .finally(() => setAreasLoading(false))
+    }
   }
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault()
     if (!newName.trim()) { setCreateError('Quiz name is required'); return }
+    if (user?.role === 'ADMIN' && quizScope === 'area' && !quizAreaName) {
+      setCreateError('Please select an area')
+      return
+    }
     setCreating(true)
     setCreateError(null)
     try {
+      const areaName =
+        user?.role === 'ADMIN'
+          ? (quizScope === 'national' ? null : quizAreaName)
+          : (user?.areaName ?? null)
+
       const quiz = await api.post<Quiz>('/quiz', {
         name: newName.trim(),
         description: newDescription.trim() || undefined,
         date: newDate || undefined,
+        areaName,
       })
       setDialogOpen(false)
       router.push(`/host/quiz/${quiz.id}`)
@@ -117,6 +177,7 @@ export default function HostDashboardPage(): React.ReactElement {
       await api.delete<unknown>(`/quiz/${id}`)
       setDeleteId(null)
       setQuizzes((prev) => prev.filter((q) => q.id !== id))
+      void load(filterArea)
     } catch {
       // Keep dialog open on error — user can retry
     } finally {
@@ -139,12 +200,24 @@ export default function HostDashboardPage(): React.ReactElement {
   return (
     <div className="p-8 max-w-4xl">
       {/* Header */}
-      <div className="flex items-center justify-between mb-8">
+      <div className="flex flex-wrap items-center justify-between gap-4 mb-8">
         <div>
           <h1 className="text-2xl font-bold text-white">Quizzes</h1>
           <p className="text-text-muted text-sm mt-1">Manage your quiz sessions</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {user?.role === 'ADMIN' && (
+            <select
+              value={filterArea}
+              onChange={(e) => handleAreaFilterChange(e.target.value)}
+              className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-white outline-none focus:border-blitz-accent/60"
+            >
+              <option value="__national__">National Quizzes</option>
+              {areas.map((a) => (
+                <option key={a.id} value={a.name}>{a.name}</option>
+              ))}
+            </select>
+          )}
           {/* TODO: remove seed button before final release */}
           <Button variant="ghost" onClick={handleSeed} disabled={seeding} title="Seed sample quiz data (dev only)">
             {seeding ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <FlaskConical className="h-4 w-4 mr-2" />}
@@ -267,6 +340,44 @@ export default function HostDashboardPage(): React.ReactElement {
               rows={3}
             />
           </div>
+          {user?.role === 'ADMIN' && (
+            <div className="space-y-2">
+              <Label>Quiz Type</Label>
+              <div className="flex gap-3">
+                {(['national', 'area'] as const).map((scope) => (
+                  <button
+                    key={scope}
+                    type="button"
+                    onClick={() => setQuizScope(scope)}
+                    className={`flex-1 py-2 rounded-lg border text-sm font-medium transition-colors capitalize ${
+                      quizScope === scope
+                        ? 'border-blitz-accent bg-blitz-accent/10 text-white'
+                        : 'border-border text-text-secondary hover:text-white hover:border-border/80'
+                    }`}
+                  >
+                    {scope}
+                  </button>
+                ))}
+              </div>
+              {quizScope === 'area' && (
+                <div className="space-y-1.5">
+                  <Label htmlFor="quiz-area">Area</Label>
+                  <select
+                    id="quiz-area"
+                    value={quizAreaName}
+                    onChange={(e) => setQuizAreaName(e.target.value)}
+                    className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-white outline-none focus:border-blitz-accent/60 focus:ring-2 focus:ring-blitz-accent/20 disabled:opacity-50"
+                    disabled={areasLoading}
+                  >
+                    <option value="">{areasLoading ? 'Loading areas…' : 'Select an area'}</option>
+                    {areas.map((a) => (
+                      <option key={a.id} value={a.name}>{a.name}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </div>
+          )}
           {createError && (
             <div className="flex items-center gap-2 text-wrong text-sm">
               <AlertCircle className="h-4 w-4 flex-shrink-0" />

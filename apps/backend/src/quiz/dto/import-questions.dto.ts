@@ -19,6 +19,7 @@ export interface ParsedImportQuestion {
   text: string
   correctAnswer: string
   aliases: string[]
+  clues: string[]
   difficulty: string
   points: number | null
   options: Array<{ label: string; text: string; isCorrect: boolean }> | null

@@ -295,7 +295,7 @@ export class AuthService {
       },
     })
 
-    const appDomain = process.env.PUBLIC_URL || 'http://localhost:3000'
+    const appDomain = dto.appOrigin || process.env.PUBLIC_URL || 'http://localhost:3000'
     const resetLink = `${appDomain}/host/reset-password?token=${token}`
 
     const htmlBody = `

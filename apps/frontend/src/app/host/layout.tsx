@@ -2,7 +2,7 @@
 import { useState, useEffect } from 'react'
 import { usePathname } from 'next/navigation'
 import Link from 'next/link'
-import { LayoutDashboard, Loader2, Eye, EyeOff, AlertCircle, ShieldCheck, LogOut } from 'lucide-react'
+import { LayoutDashboard, Loader2, Eye, EyeOff, AlertCircle, ShieldCheck, LogOut, Menu, X } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { api } from '@/lib/api'
 import { useHostStore } from '@/stores/useHostStore'
@@ -179,6 +179,7 @@ function LoginPage({ onAuthed }: { onAuthed: () => void }) {
 
 export default function HostLayout({ children }: { children: React.ReactNode }): React.ReactElement {
   const [authState, setAuthState] = useState<AuthState>('loading')
+  const [sidebarOpen, setSidebarOpen] = useState(false)
   const pathname = usePathname()
   const { networkInfo, loadNetworkInfo, setAuthenticated, setUser, user, reset } = useHostStore()
   const [loggingOut, setLoggingOut] = useState(false)
@@ -230,10 +231,10 @@ export default function HostLayout({ children }: { children: React.ReactNode }):
   const isQuizSection = pathname?.startsWith('/host/quiz') || pathname === '/host'
   const isUsersSection = pathname?.startsWith('/host/users')
 
-  return (
-    <div className="min-h-screen bg-background flex">
-      <aside className="w-60 border-r border-border bg-surface flex-shrink-0 flex flex-col">
-        <div className="p-5 border-b border-border">
+  const sidebarContent = (
+    <>
+      <div className="p-5 border-b border-border flex items-center justify-between">
+        <div>
           <span className="text-xl font-bold text-white tracking-tight">
             APO<span className="text-blitz-accent">QUIZ</span>
           </span>
@@ -243,59 +244,106 @@ export default function HostLayout({ children }: { children: React.ReactNode }):
             </div>
           )}
         </div>
-        <nav className="flex-1 p-3 space-y-1">
+        <button
+          className="lg:hidden p-1 text-text-muted hover:text-white transition-colors"
+          onClick={() => setSidebarOpen(false)}
+        >
+          <X className="h-5 w-5" />
+        </button>
+      </div>
+      <nav className="flex-1 p-3 space-y-1">
+        <Link
+          href="/host"
+          onClick={() => setSidebarOpen(false)}
+          className={cn(
+            'flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors',
+            isQuizSection
+              ? 'bg-surface-elevated text-white'
+              : 'text-text-secondary hover:text-white hover:bg-surface-elevated',
+          )}
+        >
+          <LayoutDashboard className="h-4 w-4" />
+          Quizzes
+        </Link>
+
+        {(user?.role === 'ADMIN' || user?.role === 'OWNER') && (
           <Link
-            href="/host"
+            href="/host/users"
+            onClick={() => setSidebarOpen(false)}
             className={cn(
               'flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors',
-              isQuizSection
+              isUsersSection
                 ? 'bg-surface-elevated text-white'
                 : 'text-text-secondary hover:text-white hover:bg-surface-elevated',
             )}
           >
-            <LayoutDashboard className="h-4 w-4" />
-            Quizzes
+            <UsersIcon className="h-4 w-4" />
+            Users
           </Link>
+        )}
+      </nav>
+      <div className="p-4 border-t border-border space-y-3">
+        {networkInfo ? (
+          <div className="text-xs space-y-0.5">
+            <p className="text-text-muted font-medium uppercase tracking-wider">Host PC</p>
+            <p className="text-text-secondary font-mono">
+              {networkInfo.localIP}:{networkInfo.port}
+            </p>
+          </div>
+        ) : (
+          <p className="text-xs text-text-muted">Loading network info…</p>
+        )}
+        <button
+          onClick={() => void handleLogout()}
+          disabled={loggingOut}
+          className="flex items-center gap-2 w-full px-3 py-2 rounded-lg text-sm text-text-secondary hover:text-red-400 hover:bg-red-400/10 transition-colors disabled:opacity-50"
+        >
+          {loggingOut
+            ? <Loader2 className="h-4 w-4 animate-spin" />
+            : <LogOut className="h-4 w-4" />}
+          {loggingOut ? 'Logging out…' : 'Logout'}
+        </button>
+      </div>
+    </>
+  )
 
-          {(user?.role === 'ADMIN' || user?.role === 'OWNER') && (
-            <Link
-              href="/host/users"
-              className={cn(
-                'flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors',
-                isUsersSection
-                  ? 'bg-surface-elevated text-white'
-                  : 'text-text-secondary hover:text-white hover:bg-surface-elevated',
-              )}
-            >
-              <UsersIcon className="h-4 w-4" />
-              Users
-            </Link>
-          )}
-        </nav>
-        <div className="p-4 border-t border-border space-y-3">
-          {networkInfo ? (
-            <div className="text-xs space-y-0.5">
-              <p className="text-text-muted font-medium uppercase tracking-wider">Host PC</p>
-              <p className="text-text-secondary font-mono">
-                {networkInfo.localIP}:{networkInfo.port}
-              </p>
-            </div>
-          ) : (
-            <p className="text-xs text-text-muted">Loading network info…</p>
-          )}
-          <button
-            onClick={() => void handleLogout()}
-            disabled={loggingOut}
-            className="flex items-center gap-2 w-full px-3 py-2 rounded-lg text-sm text-text-secondary hover:text-red-400 hover:bg-red-400/10 transition-colors disabled:opacity-50"
-          >
-            {loggingOut
-              ? <Loader2 className="h-4 w-4 animate-spin" />
-              : <LogOut className="h-4 w-4" />}
-            {loggingOut ? 'Logging out…' : 'Logout'}
-          </button>
-        </div>
+  return (
+    <div className="min-h-screen bg-background flex">
+      {/* Mobile backdrop */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 bg-black/60 z-40 lg:hidden"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+
+      {/* Sidebar — fixed overlay on mobile, static on desktop */}
+      <aside
+        className={cn(
+          'fixed inset-y-0 left-0 z-50 w-60 border-r border-border bg-surface flex flex-col transition-transform duration-200',
+          'lg:relative lg:translate-x-0 lg:z-auto',
+          sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0',
+        )}
+      >
+        {sidebarContent}
       </aside>
-      <div className="flex-1 min-w-0 overflow-auto">{children}</div>
+
+      {/* Main content */}
+      <div className="flex-1 min-w-0 overflow-auto flex flex-col">
+        {/* Mobile top bar */}
+        <div className="lg:hidden flex items-center gap-3 px-4 py-3 border-b border-border bg-surface flex-shrink-0">
+          <button
+            onClick={() => setSidebarOpen(true)}
+            className="p-1 text-text-muted hover:text-white transition-colors"
+          >
+            <Menu className="h-5 w-5" />
+          </button>
+          <span className="text-lg font-bold text-white tracking-tight">
+            APO<span className="text-blitz-accent">QUIZ</span>
+          </span>
+        </div>
+        <div className="flex-1 min-w-0 overflow-auto">{children}</div>
+      </div>
     </div>
   )
 }

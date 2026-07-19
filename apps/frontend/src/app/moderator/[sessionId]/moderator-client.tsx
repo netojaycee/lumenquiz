@@ -1764,6 +1764,11 @@ const toggleTimer = useCallback(() => {
                             <p className="text-correct font-medium">
                               {currentQuestion.correctAnswer}
                             </p>
+                            {currentQuestion.aliases && currentQuestion.aliases.length > 0 && (
+                              <p className="text-text-muted text-xs mt-1">
+                                Also accepted: {currentQuestion.aliases.join(', ')}
+                              </p>
+                            )}
                           </div>
                         </div>
                       ) : (
