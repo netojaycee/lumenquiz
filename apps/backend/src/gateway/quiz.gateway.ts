@@ -51,6 +51,9 @@ import {
 } from '@apoquiz/game-engine'
 import type { GameModeStrategy } from '@apoquiz/game-engine'
 import { NetworkService } from '../network/network.service'
+import { UseInterceptors } from '@nestjs/common'
+import { noticeError, runInBackgroundTransaction } from '../common/observability/newrelic'
+import { NewRelicWsInterceptor } from '../common/observability/newrelic-ws.interceptor'
 
 // ─── Local types ──────────────────────────────────────────────────────────────
 
@@ -98,6 +101,7 @@ const voteThrottleTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 // ─── Gateway ──────────────────────────────────────────────────────────────────
 
+@UseInterceptors(NewRelicWsInterceptor)
 @WebSocketGateway({ cors: { origin: '*' }, transports: ['websocket', 'polling'] })
 export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()
@@ -211,7 +215,10 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
           include: {
             team: {
               select: {
-                id: true, name: true, color: true, pin: true,
+                id: true,
+                name: true,
+                color: true,
+                pin: true,
                 members: { select: { id: true, name: true, avatarUrl: true } },
               },
             },
@@ -256,7 +263,11 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
   // ─── Join helpers ─────────────────────────────────────────────────────────────
 
-  private async joinAsTeamByCode(client: Socket, teamCode: string, deviceToken?: string): Promise<void> {
+  private async joinAsTeamByCode(
+    client: Socket,
+    teamCode: string,
+    deviceToken?: string,
+  ): Promise<void> {
     const tc = teamCode.toUpperCase()
 
     const team = await this.prisma.team.findUnique({
@@ -284,7 +295,10 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
           include: {
             team: {
               select: {
-                id: true, name: true, color: true, pin: true,
+                id: true,
+                name: true,
+                color: true,
+                pin: true,
                 members: { select: { id: true, name: true, avatarUrl: true } },
               },
             },
@@ -319,7 +333,8 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       if (!deviceToken || deviceToken !== st.deviceToken) {
         client.emit(SERVER_EVENTS.ERROR, {
           code: 'TEAM_SLOT_CLAIMED',
-          message: 'This team has already joined from another device. Ask your host to reset the slot if you need to reconnect.',
+          message:
+            'This team has already joined from another device. Ask your host to reset the slot if you need to reconnect.',
         })
         return
       }
@@ -354,9 +369,7 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
         .catch(() => undefined)
       const prevCache = activeSessions.get(prev.sessionId ?? '')
       if (prevCache) prevCache.connectedTeamIds.delete(prev.teamId)
-      this.server
-        .to(`session:${prev.sessionId}`)
-        .emit('team:disconnected', { teamId: prev.teamId })
+      this.server.to(`session:${prev.sessionId}`).emit('team:disconnected', { teamId: prev.teamId })
     }
 
     ;(client.data as SocketData) = { role: UserRole.TEAM, sessionId: session.id, teamId: team.id }
@@ -894,7 +907,10 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
     const isLastQuestion = (() => {
       if (currentRound?.gameMode === 'ultimate_challenge') return false // UC ends when teams are done
-      return cache.currentQuestionIndex + 1 >= Math.min(cache.currentRoundQuestions.length, currentRound?.questionCount ?? 999)
+      return (
+        cache.currentQuestionIndex + 1 >=
+        Math.min(cache.currentRoundQuestions.length, currentRound?.questionCount ?? 999)
+      )
     })()
 
     // for tile blitz it is end if last question and the answer is right, else we have bonus and should end there
@@ -1014,7 +1030,11 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       correctAnswer: question.correctAnswer,
       teamAnswers,
       updatedScores: scores,
-      isLastQuestion: cache.suddenVictory ? true : (isTileBlitz ? isLastTileBlitzTurn : isLastQuestion),
+      isLastQuestion: cache.suddenVictory
+        ? true
+        : isTileBlitz
+          ? isLastTileBlitzTurn
+          : isLastQuestion,
       isSuddenVictory: !!cache.suddenVictory,
     })
 
@@ -1365,7 +1385,8 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     if (!this.isModerator(client)) return
     const { sessionId } = payload ?? {}
     const cache = activeSessions.get(sessionId)
-    if (!cache || !cache.suddenVictory || cache.status !== SessionStatus.SUDDEN_VICTORY_INTRO) return
+    if (!cache || !cache.suddenVictory || cache.status !== SessionStatus.SUDDEN_VICTORY_INTRO)
+      return
 
     const { question, tiedTeamIds } = cache.suddenVictory
     const durationMs = 20_000
@@ -1382,9 +1403,11 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     cache.pausedAt = null
 
     cache.suddenVictory.timerHandle = setTimeout(() => {
-      if (cache.status !== SessionStatus.QUESTION_OPEN) return
-      this.lockQuestion(sessionId, cache)
-      this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.QUESTION_TIMER_ELAPSED)
+      this.runDetached('timer:sudden_victory_elapsed', sessionId, () => {
+        if (cache.status !== SessionStatus.QUESTION_OPEN) return
+        this.lockQuestion(sessionId, cache)
+        this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.QUESTION_TIMER_ELAPSED)
+      })
     }, durationMs)
 
     this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.QUESTION_OPEN, {
@@ -1475,7 +1498,13 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       cache.timerDeadline = Date.now() + remaining
       cache.pausedAt = null
       cache.remainingMsAtPause = null
-      cache.questionTimerHandle = setTimeout(() => void this.onTimerElapsed(sessionId), remaining)
+      cache.questionTimerHandle = setTimeout(
+        () =>
+          this.runDetached('timer:question_elapsed', sessionId, () =>
+            this.onTimerElapsed(sessionId),
+          ),
+        remaining,
+      )
     }
   }
 
@@ -1526,8 +1555,7 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     const isBonusAnswering = cache.status === SessionStatus.BONUS_ANSWERING
     const isClueAnswering = cache.status === SessionStatus.CLUE_ANSWERING
     const isLocked = cache.status === SessionStatus.QUESTION_LOCKED
-    const validQuestionStatus =
-      cache.status === SessionStatus.QUESTION_OPEN || isLocked
+    const validQuestionStatus = cache.status === SessionStatus.QUESTION_OPEN || isLocked
     if (!isBonusAnswering && !isClueAnswering && !validQuestionStatus) return
     // Accept answers with a grace window to account for network round-trip time:
     // - QUESTION_OPEN: 500 ms for internet latency (team submits "in time" but packet arrives late)
@@ -1716,7 +1744,11 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     cache.remainingMsAtPause = null
 
     if (cache.questionTimerHandle) clearTimeout(cache.questionTimerHandle)
-    cache.questionTimerHandle = setTimeout(() => void this.onTimerElapsed(sessionId), durationMs)
+    cache.questionTimerHandle = setTimeout(
+      () =>
+        this.runDetached('timer:question_elapsed', sessionId, () => this.onTimerElapsed(sessionId)),
+      durationMs,
+    )
 
     void this.prisma.session
       .update({
@@ -1728,7 +1760,9 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     const question = cache.currentRoundQuestions[questionIndex]
 
     // Sync clocks immediately before revealing the question — critical for timer accuracy
-    this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.CLOCK_SYNC, { serverTime: Date.now() })
+    this.server
+      .to(`session:${sessionId}`)
+      .emit(SERVER_EVENTS.CLOCK_SYNC, { serverTime: Date.now() })
     // Broadcast tile selection + question to all
     this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.QUESTION_OPEN, {
       questionId,
@@ -1867,11 +1901,13 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     // Schedule server-side elapsed event — clients disable their submit button on receipt
     const bonusTeamIdForTimer = tb.bonusBuzzTeamId
     tb.bonusTimerHandle = setTimeout(() => {
-      tb.bonusTimerHandle = null
-      if (cache.status !== SessionStatus.BONUS_ANSWERING) return
-      this.server
-        .to(`session:${sessionId}`)
-        .emit(SERVER_EVENTS.TILEBLITZ_BONUS_TIMER_ELAPSED, { bonusTeamId: bonusTeamIdForTimer })
+      this.runDetached('timer:tileblitz_bonus_elapsed', sessionId, () => {
+        tb.bonusTimerHandle = null
+        if (cache.status !== SessionStatus.BONUS_ANSWERING) return
+        this.server
+          .to(`session:${sessionId}`)
+          .emit(SERVER_EVENTS.TILEBLITZ_BONUS_TIMER_ELAPSED, { bonusTeamId: bonusTeamIdForTimer })
+      })
     }, bonusTimerDurationMs)
 
     cache.status = SessionStatus.BONUS_ANSWERING
@@ -2154,7 +2190,10 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     uc.timerDeadline = Date.now() + durationMs
 
     if (uc.timerHandle) clearTimeout(uc.timerHandle)
-    uc.timerHandle = setTimeout(() => void this.onUCTimerElapsed(sessionId), durationMs)
+    uc.timerHandle = setTimeout(
+      () => this.runDetached('timer:uc_elapsed', sessionId, () => this.onUCTimerElapsed(sessionId)),
+      durationMs,
+    )
 
     // 🚦 Update session state
     cache.status = SessionStatus.UC_ACTIVE
@@ -2609,7 +2648,10 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
     if (cr.answeringTimerHandle) clearTimeout(cr.answeringTimerHandle)
     cr.answeringTimerHandle = setTimeout(
-      () => void this.handleClueAnsweringTimeout(sessionId),
+      () =>
+        this.runDetached('timer:clue_answering_timeout', sessionId, () =>
+          this.handleClueAnsweringTimeout(sessionId),
+        ),
       answeringDurationMs,
     )
 
@@ -2665,7 +2707,11 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     const timerMs =
       (round?.timerSeconds ?? GAME_CONSTANTS.CLUE_REVEAL_DEFAULT_CLUE_TIMER_SECONDS) * 1000
     cr.clueTimerDeadline = Date.now() + timerMs
-    cr.clueTimerHandle = setTimeout(() => void this.onClueTimerElapsed(sessionId), timerMs)
+    cr.clueTimerHandle = setTimeout(
+      () =>
+        this.runDetached('timer:clue_elapsed', sessionId, () => this.onClueTimerElapsed(sessionId)),
+      timerMs,
+    )
 
     this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.CLUE_NEXT, {
       clueIndex: cr.currentClueIndex,
@@ -2727,7 +2773,8 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     predictedRanking.forEach((teamId, idx) => {
       if (!cache.audienceVotePositionTally[teamId]) cache.audienceVotePositionTally[teamId] = {}
       const pos = idx + 1
-      cache.audienceVotePositionTally[teamId][pos] = (cache.audienceVotePositionTally[teamId][pos] ?? 0) + 1
+      cache.audienceVotePositionTally[teamId][pos] =
+        (cache.audienceVotePositionTally[teamId][pos] ?? 0) + 1
     })
 
     // Throttled broadcast: coalesce rapid submissions into at most one update per 400 ms.
@@ -2735,12 +2782,14 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     const existingTimer = voteThrottleTimers.get(sessionId)
     if (existingTimer) clearTimeout(existingTimer)
     const timer = setTimeout(() => {
-      voteThrottleTimers.delete(sessionId)
-      const totalVotes = Object.values(cache.audienceVoteTally).reduce((s, v) => s + v, 0)
-      this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.ROUND_VOTE_UPDATE, {
-        tally: cache.audienceVoteTally,
-        positionTally: cache.audienceVotePositionTally,
-        totalVotes,
+      this.runDetached('timer:audience_vote_flush', sessionId, () => {
+        voteThrottleTimers.delete(sessionId)
+        const totalVotes = Object.values(cache.audienceVoteTally).reduce((s, v) => s + v, 0)
+        this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.ROUND_VOTE_UPDATE, {
+          tally: cache.audienceVoteTally,
+          positionTally: cache.audienceVotePositionTally,
+          totalVotes,
+        })
       })
     }, 400)
     voteThrottleTimers.set(sessionId, timer)
@@ -2853,7 +2902,11 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     if (cache.questionTimerHandle) {
       clearTimeout(cache.questionTimerHandle)
     }
-    cache.questionTimerHandle = setTimeout(() => void this.onTimerElapsed(sessionId), durationMs)
+    cache.questionTimerHandle = setTimeout(
+      () =>
+        this.runDetached('timer:question_elapsed', sessionId, () => this.onTimerElapsed(sessionId)),
+      durationMs,
+    )
 
     void this.prisma.session
       .update({
@@ -2862,7 +2915,9 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       })
       .catch(() => undefined)
 
-    this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.CLOCK_SYNC, { serverTime: Date.now() })
+    this.server
+      .to(`session:${sessionId}`)
+      .emit(SERVER_EVENTS.CLOCK_SYNC, { serverTime: Date.now() })
     this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.QUESTION_OPEN, {
       questionId: question.id,
       question,
@@ -2874,6 +2929,39 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
     // Audience Engagement
     this.checkAndTriggerAudienceActivity(sessionId, cache)
+  }
+
+  /**
+   * Runs a timer callback that nobody awaits, as its own New Relic transaction.
+   *
+   * A bare `void somePromise()` inside setTimeout detaches the promise from any
+   * catch, so one failed query would surface as an unhandled rejection and take
+   * the whole backend down mid-quiz. Catching here keeps the failure scoped to
+   * the single timer that caused it, and the surrounding transaction gives the
+   * callback's queries and errors somewhere to be reported — the handler that
+   * scheduled the timer finished long before this runs.
+   */
+  private runDetached(name: string, sessionId: string, task: () => void | Promise<void>): void {
+    runInBackgroundTransaction(name, 'Timer', { sessionId }, () => {
+      try {
+        const result = task()
+
+        if (result instanceof Promise) {
+          return result.catch((error: unknown) => this.reportDetachedFailure(name, error))
+        }
+      } catch (error) {
+        this.reportDetachedFailure(name, error)
+      }
+
+      return undefined
+    })
+  }
+
+  private reportDetachedFailure(name: string, error: unknown): void {
+    const failure = error instanceof Error ? error : new Error(String(error))
+
+    console.error(`[WS] timer "${name}" failed —`, failure)
+    noticeError(failure, { timer: name })
   }
 
   private async onTimerElapsed(sessionId: string): Promise<void> {
@@ -3348,7 +3436,11 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     const timerMs =
       (round?.timerSeconds ?? GAME_CONSTANTS.CLUE_REVEAL_DEFAULT_CLUE_TIMER_SECONDS) * 1000
     cr.clueTimerDeadline = Date.now() + timerMs
-    cr.clueTimerHandle = setTimeout(() => void this.onClueTimerElapsed(sessionId), timerMs)
+    cr.clueTimerHandle = setTimeout(
+      () =>
+        this.runDetached('timer:clue_elapsed', sessionId, () => this.onClueTimerElapsed(sessionId)),
+      timerMs,
+    )
 
     cache.status = SessionStatus.CLUE_OPEN
     cache.submittedTeams = new Set()
@@ -3508,7 +3600,13 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
         (round?.timerSeconds ?? GAME_CONSTANTS.CLUE_REVEAL_DEFAULT_CLUE_TIMER_SECONDS) * 1000
       cr.clueTimerDeadline = Date.now() + timerMs
       if (cr.clueTimerHandle) clearTimeout(cr.clueTimerHandle)
-      cr.clueTimerHandle = setTimeout(() => void this.onClueTimerElapsed(sessionId), timerMs)
+      cr.clueTimerHandle = setTimeout(
+        () =>
+          this.runDetached('timer:clue_elapsed', sessionId, () =>
+            this.onClueTimerElapsed(sessionId),
+          ),
+        timerMs,
+      )
 
       cache.status = SessionStatus.CLUE_OPEN
       void this.prisma.session
@@ -3547,7 +3645,11 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       (round?.timerSeconds ?? GAME_CONSTANTS.CLUE_REVEAL_DEFAULT_CLUE_TIMER_SECONDS) * 1000
     cr.clueTimerDeadline = Date.now() + timerMs
     if (cr.clueTimerHandle) clearTimeout(cr.clueTimerHandle)
-    cr.clueTimerHandle = setTimeout(() => void this.onClueTimerElapsed(sessionId), timerMs)
+    cr.clueTimerHandle = setTimeout(
+      () =>
+        this.runDetached('timer:clue_elapsed', sessionId, () => this.onClueTimerElapsed(sessionId)),
+      timerMs,
+    )
 
     cache.status = SessionStatus.CLUE_OPEN
     void this.prisma.session
@@ -3607,7 +3709,12 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       score: number
       roundScores: string
       connected: boolean
-      team: { id: string; name: string; color: string; members?: Array<{ id: string; name: string }> }
+      team: {
+        id: string
+        name: string
+        color: string
+        members?: Array<{ id: string; name: string }>
+      }
     }>
   }): Promise<void> {
     if (activeSessions.has(session.id)) {
@@ -3781,7 +3888,7 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
     for (const [memberId, payload] of interaction.submissions) {
       let isCorrect = false
-      
+
       if (interaction.type === AudienceInteractionType.PREDICTION) {
         if (interaction.activity === AudienceActivity.CLUE_DEPTH_PREDICTION) {
           const actualClueIndex = cache.clueReveal?.currentClueIndex ?? 0
@@ -4037,7 +4144,13 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       activity,
       questionId: cache.currentRoundQuestions[cache.currentQuestionIndex]?.id,
       deadline,
-      handle: setTimeout(() => this.closeAudienceInteraction(sessionId, cache), durationMs),
+      handle: setTimeout(
+        () =>
+          this.runDetached('timer:audience_interaction_close', sessionId, () =>
+            this.closeAudienceInteraction(sessionId, cache),
+          ),
+        durationMs,
+      ),
       tally: {},
       totalSubmissions: 0,
       submissions: new Map(),
@@ -4203,7 +4316,11 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
                 `Can ${activeTeam.teamName} handle the pressure?`,
                 `${activeTeam.teamName} is in the hot seat — will they deliver?`,
               ]
-            : ['Will they get it right?', 'Can they handle the pressure?', 'Under the spotlight — will they know it?'],
+            : [
+                'Will they get it right?',
+                'Can they handle the pressure?',
+                'Under the spotlight — will they know it?',
+              ],
           tile_blitz: activeTeam
             ? [
                 `Will ${activeTeam.teamName} get this tile?`,
@@ -4219,7 +4336,7 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
           ],
           wager: [
             'Which team will wager correctly?',
-            "Who will bet on the right answer?",
+            'Who will bet on the right answer?',
             "Bold move — which team's bet will pay off?",
           ],
           elimination: [
