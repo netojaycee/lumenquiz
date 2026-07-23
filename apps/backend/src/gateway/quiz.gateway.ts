@@ -938,19 +938,11 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       .update({ where: { id: question.id }, data: { status: 'revealed' } })
       .catch(() => undefined)
 
-    // Load answers from DB for this question + session
-    const dbAnswers = await this.prisma.teamAnswer.findMany({
-      where: { questionId: question.id, sessionId },
-      include: { team: { select: { id: true, name: true, color: true } } },
-    })
-
-    let activeTeamAnswer = null
+    // Read answers from in-memory cache (buffered at submission, written to DB on lock)
     const activeTeamId =
       cache.tileBlitz?.turnOrderTeamIds?.[cache.tileBlitz?.currentTurnIndex] ?? null
 
-    if (isTileBlitz && activeTeamId) {
-      activeTeamAnswer = dbAnswers.find((a) => a.teamId === activeTeamId)
-    }
+    const activeTeamAnswer = activeTeamId ? (cache.submittedAnswers.get(activeTeamId) ?? null) : null
 
     let isEndOfFlow = false
 
@@ -963,11 +955,11 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       isEndOfFlow = isLastQuestion
     }
 
-    const answeredTeamIds = new Set(dbAnswers.map((a) => a.teamId))
-    const teamAnswers: TeamAnswerResult[] = dbAnswers.map((a) => ({
+    const answeredTeamIds = new Set(cache.submittedAnswers.keys())
+    const teamAnswers: TeamAnswerResult[] = Array.from(cache.submittedAnswers.values()).map((a) => ({
       teamId: a.teamId,
-      teamName: a.team.name,
-      teamColor: a.team.color,
+      teamName: a.teamName,
+      teamColor: a.teamColor,
       submittedAnswer: a.submittedAnswer,
       isCorrect: a.isCorrect,
       pointsEarned: a.pointsEarned,
@@ -1051,7 +1043,10 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     void this.resolveAudienceInteractions(
       sessionId,
       question.id,
-      dbAnswers.map((a) => ({ teamId: a.teamId, isCorrect: a.isCorrect })),
+      Array.from(cache.submittedAnswers.values()).map((a) => ({
+        teamId: a.teamId,
+        isCorrect: a.isCorrect,
+      })),
     )
 
     // Sudden Victory: notify moderator to declare winner; skip normal round flow
@@ -1532,6 +1527,7 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     if (!td) return
 
     td.score = Math.max(0, td.score + adjustment)
+    cache.scoresDirty = true
     void this.prisma.sessionTeam
       .updateMany({ where: { teamId, sessionId }, data: { score: td.score } })
       .catch(() => undefined)
@@ -1656,32 +1652,23 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
         td.roundScores[cache.currentRoundId] =
           (td.roundScores[cache.currentRoundId] ?? 0) + pointsEarned
       }
+      cache.scoresDirty = true
     }
 
-    // Persist to DB — don't await, don't block the socket loop
-    void this.prisma
-      .$transaction([
-        this.prisma.teamAnswer.create({
-          data: {
-            questionId,
-            teamId,
-            sessionId,
-            submittedAnswer: answer,
-            isCorrect: validation.correct,
-            pointsEarned,
-            timeRemaining: timeRemainingMs,
-          },
-        }),
-        ...(td
-          ? [
-              this.prisma.sessionTeam.updateMany({
-                where: { teamId, sessionId },
-                data: { score: td.score },
-              }),
-            ]
-          : []),
-      ])
-      .catch(() => undefined)
+    // Buffer answer in cache — batch-written to DB when question locks
+    const ts = cache.teamScores.get(teamId)
+    if (ts) {
+      cache.submittedAnswers.set(teamId, {
+        teamId,
+        teamName: ts.teamName,
+        teamColor: ts.teamColor,
+        questionId,
+        submittedAnswer: answer,
+        isCorrect: validation.correct,
+        pointsEarned,
+        timeRemaining: timeRemainingMs,
+      })
+    }
 
     // Track tiebreaker data: running total of timeRemaining on correct answers
     if (validation.correct && td) {
@@ -1746,6 +1733,7 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     cache.timerDeadline = startTime + durationMs
     cache.timerDurationMs = durationMs
     cache.submittedTeams = new Set()
+    cache.submittedAnswers = new Map()
     cache.status = SessionStatus.QUESTION_OPEN
     cache.pausedAt = null
     cache.remainingMsAtPause = null
@@ -1977,9 +1965,7 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
         td.roundScores[cache.currentRoundId] =
           (td.roundScores[cache.currentRoundId] ?? 0) + pointsEarned
       }
-      void this.prisma.sessionTeam
-        .updateMany({ where: { teamId: bonusTeamId, sessionId }, data: { score: td.score } })
-        .catch(() => undefined)
+      cache.scoresDirty = true
     }
 
     // Persist bonus answer to DB
@@ -2306,6 +2292,7 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     const td = cache.teamScores.get(teamId)
     if (td) {
       td.score += points
+      cache.scoresDirty = true
 
       if (cache.currentRoundId) {
         td.roundScores[cache.currentRoundId] = (td.roundScores[cache.currentRoundId] ?? 0) + points
@@ -2499,6 +2486,7 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     const td = cache.teamScores.get(teamId)
     if (td) {
       td.score += pts
+      cache.scoresDirty = true
       if (cache.currentRoundId) {
         td.roundScores[cache.currentRoundId] = (td.roundScores[cache.currentRoundId] ?? 0) + pts
       }
@@ -2549,6 +2537,7 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     const td = cache.teamScores.get(teamId)
     if (td) {
       td.score = Math.max(0, td.score - pts)
+      cache.scoresDirty = true
       if (cache.currentRoundId) {
         td.roundScores[cache.currentRoundId] = Math.max(
           0,
@@ -2901,6 +2890,7 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     cache.timerDeadline = startTime + durationMs
     cache.timerDurationMs = durationMs
     cache.submittedTeams = new Set()
+    cache.submittedAnswers = new Map()
     cache.status = SessionStatus.QUESTION_OPEN
     cache.pausedAt = null
     cache.remainingMsAtPause = null
@@ -2998,6 +2988,24 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     void this.prisma.session
       .update({ where: { id: sessionId }, data: { status: 'question_locked' } })
       .catch(() => undefined)
+
+    // Batch-write all buffered answers for this question
+    const answers = Array.from(cache.submittedAnswers.values())
+    if (answers.length > 0) {
+      void this.prisma.teamAnswer
+        .createMany({
+          data: answers.map((a) => ({
+            questionId: a.questionId,
+            teamId: a.teamId,
+            sessionId,
+            submittedAnswer: a.submittedAnswer,
+            isCorrect: a.isCorrect,
+            pointsEarned: a.pointsEarned,
+            timeRemaining: a.timeRemaining,
+          })),
+        })
+        .catch(() => undefined)
+    }
 
     // Audience Engagement
     this.closeAudienceInteraction(sessionId, cache)
@@ -3158,19 +3166,6 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       GAME_CONSTANTS.UC_DEFAULT_POINTS_PER_CORRECT
 
     const pointsEarned = correctCount * pointsPerQ
-
-    // 💾 persist score
-    if (td) {
-      void this.prisma.sessionTeam
-        .updateMany({
-          where: { teamId, sessionId },
-          data: {
-            score: td.score,
-            roundScores: JSON.stringify(td.roundScores),
-          },
-        })
-        .catch(() => undefined)
-    }
 
     // 🧠 mark completion if not already
     uc.teamsCompleted.add(teamId)
@@ -3347,40 +3342,47 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
     const activeTeamId = tb.turnOrderTeamIds[tb.currentTurnIndex]
     const td = cache.teamScores.get(activeTeamId)
+    const timeRemaining = Math.max(0, cache.timerDeadline - Date.now())
     if (td && validation.correct) {
       td.score += pointsEarned
       if (cache.currentRoundId) {
         td.roundScores[cache.currentRoundId] =
           (td.roundScores[cache.currentRoundId] ?? 0) + pointsEarned
       }
-      if (validation.correct)
-        td.correctAnswerTimeMs += Math.max(0, cache.timerDeadline - Date.now())
+      td.correctAnswerTimeMs += timeRemaining
+      cache.scoresDirty = true
     }
 
-    // Persist answer to DB
-    void this.prisma
-      .$transaction([
-        this.prisma.teamAnswer.create({
-          data: {
-            questionId: question.id,
-            teamId: activeTeamId,
+    // Buffer answer then batch-write on lock
+    const ts = cache.teamScores.get(activeTeamId)
+    if (ts) {
+      cache.submittedAnswers.set(activeTeamId, {
+        teamId: activeTeamId,
+        teamName: ts.teamName,
+        teamColor: ts.teamColor,
+        questionId: question.id,
+        submittedAnswer,
+        isCorrect: validation.correct,
+        pointsEarned,
+        timeRemaining,
+      })
+    }
+    const tbAnswers = Array.from(cache.submittedAnswers.values())
+    if (tbAnswers.length > 0) {
+      void this.prisma.teamAnswer
+        .createMany({
+          data: tbAnswers.map((a) => ({
+            questionId: a.questionId,
+            teamId: a.teamId,
             sessionId,
-            submittedAnswer,
-            isCorrect: validation.correct,
-            pointsEarned,
-            timeRemaining: Math.max(0, cache.timerDeadline - Date.now()),
-          },
-        }),
-        ...(td
-          ? [
-              this.prisma.sessionTeam.updateMany({
-                where: { teamId: activeTeamId, sessionId },
-                data: { score: td.score },
-              }),
-            ]
-          : []),
-      ])
-      .catch(() => undefined)
+            submittedAnswer: a.submittedAnswer,
+            isCorrect: a.isCorrect,
+            pointsEarned: a.pointsEarned,
+            timeRemaining: a.timeRemaining,
+          })),
+        })
+        .catch(() => undefined)
+    }
 
     cache.status = SessionStatus.QUESTION_LOCKED
     void this.prisma.session
@@ -3424,6 +3426,7 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     const cr = cache.clueReveal
     if (!cr) return
 
+    cache.submittedAnswers = new Map()
     cr.clues = clues
     cr.currentClueIndex = 0
     cr.pointsAvailable = round?.pointsPerQuestion ?? GAME_CONSTANTS.CLUE_REVEAL_DEFAULT_POINTS
@@ -3501,6 +3504,24 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       .update({ where: { id: sessionId }, data: { status: 'question_locked' } })
       .catch(() => undefined)
 
+    // Batch-write all buffered clue answers for this question
+    const crAnswers = Array.from(cache.submittedAnswers.values())
+    if (crAnswers.length > 0) {
+      void this.prisma.teamAnswer
+        .createMany({
+          data: crAnswers.map((a) => ({
+            questionId: a.questionId,
+            teamId: a.teamId,
+            sessionId,
+            submittedAnswer: a.submittedAnswer,
+            isCorrect: a.isCorrect,
+            pointsEarned: a.pointsEarned,
+            timeRemaining: a.timeRemaining,
+          })),
+        })
+        .catch(() => undefined)
+    }
+
     this.closeAudienceInteraction(sessionId, cache)
 
     this.server
@@ -3538,33 +3559,23 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
         td.roundScores[cache.currentRoundId] =
           (td.roundScores[cache.currentRoundId] ?? 0) + pointsEarned
       }
+      cache.scoresDirty = true
     }
 
-    void this.prisma
-      .$transaction([
-        this.prisma.teamAnswer.create({
-          data: {
-            questionId,
-            teamId,
-            sessionId,
-            submittedAnswer: answer,
-            isCorrect: validation.correct,
-            pointsEarned,
-            timeRemaining: clueIndex,
-          },
-        }),
-        ...(td
-          ? [
-              this.prisma.sessionTeam.updateMany({
-                where: { teamId, sessionId },
-                data: { score: td.score },
-              }),
-            ]
-          : []),
-      ])
-      .catch(() => undefined)
-
+    // Buffer answer in cache — batch-written to DB when question locks
     const teamScore = cache.teamScores.get(teamId)
+    if (teamScore) {
+      cache.submittedAnswers.set(teamId, {
+        teamId,
+        teamName: teamScore.teamName,
+        teamColor: teamScore.teamColor,
+        questionId,
+        submittedAnswer: answer,
+        isCorrect: validation.correct,
+        pointsEarned,
+        timeRemaining: clueIndex,
+      })
+    }
     this.server.to(`session:${sessionId}`).emit(SERVER_EVENTS.CLUE_ANSWER_RESULT, {
       teamId,
       teamName: teamScore?.teamName ?? teamId,
@@ -3804,6 +3815,9 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       currentRoundQuestions: [],
       currentQuestionIndex: 0,
       submittedTeams: new Set(),
+      submittedAnswers: new Map(),
+      scoresDirty: true,
+      cachedScoresResult: null,
       questionStartTime: 0,
       timerDeadline: 0,
       timerDurationMs: 0,
@@ -3960,23 +3974,34 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       },
     })
 
-    // Find Audience Accuracy King (minimum 5 interactions)
-    const members = await this.prisma.audienceMember.findMany({
-      where: { sessionId },
-      select: { id: true, fullName: true },
-    })
+    // Find Audience Accuracy King — single batch query then group in-app (avoids N+1)
+    const [members, allInteractions] = await Promise.all([
+      this.prisma.audienceMember.findMany({
+        where: { sessionId },
+        select: { id: true, fullName: true },
+      }),
+      this.prisma.audienceInteraction.findMany({
+        where: { sessionId },
+        select: { memberId: true, isCorrect: true },
+      }),
+    ])
+
+    const interactionsByMember = new Map<string, { total: number; correct: number }>()
+    for (const interaction of allInteractions) {
+      const entry = interactionsByMember.get(interaction.memberId) ?? { total: 0, correct: 0 }
+      entry.total++
+      if (interaction.isCorrect) entry.correct++
+      interactionsByMember.set(interaction.memberId, entry)
+    }
 
     let bestAccuracy = 0
     let accuracyKing: { nickname: string; accuracy: number } | undefined
 
     for (const m of members) {
-      const interactions = await this.prisma.audienceInteraction.findMany({
-        where: { memberId: m.id, sessionId },
-      })
-      if (interactions.length >= 3) {
+      const stats = interactionsByMember.get(m.id)
+      if (stats && stats.total >= 3) {
         // Lowered to 3 for better visibility in small tests
-        const correct = interactions.filter((i) => i.isCorrect).length
-        const accuracy = Math.round((correct / interactions.length) * 100)
+        const accuracy = Math.round((stats.correct / stats.total) * 100)
         if (accuracy > bestAccuracy) {
           bestAccuracy = accuracy
           accuracyKing = { nickname: m.fullName, accuracy }
@@ -4051,6 +4076,9 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
   }
 
   private scoresArray(cache: SessionCache): TeamScore[] {
+    if (!cache.scoresDirty && cache.cachedScoresResult) {
+      return cache.cachedScoresResult
+    }
     const raw = Array.from(cache.teamScores.values())
     const arr = raw.map((t) => ({
       teamId: t.teamId,
@@ -4073,6 +4101,8 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     arr.forEach((s, i) => {
       s.rank = i + 1
     })
+    cache.scoresDirty = false
+    cache.cachedScoresResult = arr
     return arr
   }
 

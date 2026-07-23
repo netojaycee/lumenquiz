@@ -141,6 +141,11 @@ export interface SessionCache {
 
   // Per-question answer tracking
   submittedTeams: Set<string> // teamIds that have submitted this question
+  submittedAnswers: Map<string, CachedSubmittedAnswer> // teamId → buffered answer for current question
+
+  // Score sort cache — invalidated whenever any team score changes
+  scoresDirty: boolean
+  cachedScoresResult: import('@apoquiz/shared-types').TeamScore[] | null
   questionStartTime: number // server epoch ms when question was opened
   timerDeadline: number // epoch ms when timer expires
   timerDurationMs: number
@@ -178,6 +183,17 @@ export interface SessionCache {
 
   // Sudden Victory tiebreaker state
   suddenVictory?: SuddenVictoryState
+}
+
+export interface CachedSubmittedAnswer {
+  teamId: string
+  teamName: string
+  teamColor: string
+  questionId: string
+  submittedAnswer: string
+  isCorrect: boolean
+  pointsEarned: number
+  timeRemaining: number
 }
 
 export interface SuddenVictoryState {

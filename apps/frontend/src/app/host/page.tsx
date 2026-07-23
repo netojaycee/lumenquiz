@@ -1,7 +1,7 @@
 'use client'
 import { useState, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
-import { Plus, ChevronRight, Loader2, AlertCircle, Calendar, Users, BookOpen, Trash2, FlaskConical } from 'lucide-react'
+import { Plus, ChevronRight, Loader2, AlertCircle, Calendar, Users, BookOpen, Trash2 } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -69,9 +69,6 @@ export default function HostDashboardPage(): React.ReactElement {
   const [deleteId, setDeleteId] = useState<string | null>(null)
   const [deleting, setDeleting] = useState(false)
 
-  // DEV seed
-  const [seeding, setSeeding] = useState(false)
-
   const load = useCallback(async (area?: string) => {
     setLoading(true)
     setError(null)
@@ -109,19 +106,6 @@ export default function HostDashboardPage(): React.ReactElement {
         .catch(() => {})
     }
   }, [user?.role])
-
-  async function handleSeed() {
-    if (!confirm('This will DELETE all existing data and create a fresh sample quiz. Continue?')) return
-    setSeeding(true)
-    try {
-      await api.post('/dev/seed', {})
-      await load(filterArea)
-    } catch (err) {
-      alert(err instanceof Error ? err.message : 'Seed failed')
-    } finally {
-      setSeeding(false)
-    }
-  }
 
   function openNewDialog() {
     setNewName('')
