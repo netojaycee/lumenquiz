@@ -1,5 +1,5 @@
 -- AlterTable
-ALTER TABLE "Quiz" ADD COLUMN "areaName" TEXT;
+ALTER TABLE "Quiz" ADD COLUMN IF NOT EXISTS "areaName" TEXT;
 
 -- CreateTable
 CREATE TABLE "User" (
