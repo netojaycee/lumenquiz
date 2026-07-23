@@ -79,6 +79,17 @@ export class AuthController {
     return this.auth.invite(dto, sender)
   }
 
+  @Post('resend-invite')
+  @HttpCode(200)
+  @UseGuards(AuthSessionGuard, OwnerGuard)
+  async resendInvite(@Body() dto: { email: string }, @Req() req: Request) {
+    const sender = {
+      role: req.session.userRole!,
+      areaName: req.session.userAreaName,
+    }
+    return this.auth.resendInvite(dto.email, sender)
+  }
+
   @Get('verify-invite')
   async verifyInvite(@Query('token') token: string) {
     return this.auth.verifyInvitation(token)
