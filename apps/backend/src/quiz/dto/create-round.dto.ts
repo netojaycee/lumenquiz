@@ -1,4 +1,4 @@
-import { IsEnum, IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator'
+import { IsBoolean, IsEnum, IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator'
 import { GameMode } from '@apoquiz/shared-types'
 
 export class CreateRoundDto {
@@ -30,4 +30,8 @@ export class CreateRoundDto {
   @Min(1)
   @Max(1000)
   bonusPointsPerQuestion?: number
+
+  @IsOptional()
+  @IsBoolean()
+  isQualifier?: boolean
 }

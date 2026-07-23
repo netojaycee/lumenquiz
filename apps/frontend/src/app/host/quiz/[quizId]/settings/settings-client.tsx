@@ -187,9 +187,9 @@ export function SettingsClient(): React.ReactElement {
     setSavingPin(true)
     setPinMsg(null)
     try {
-      await api.post('/auth/moderator/change-pin', { newPin })
+      await api.patch(`/quiz/${quizId}/moderator-pin`, { newPin })
       setNewPin('')
-      setPinMsg({ ok: true, text: 'Moderator PIN updated.' })
+      setPinMsg({ ok: true, text: 'Moderator PIN updated for this quiz.' })
     } catch (err) {
       setPinMsg({ ok: false, text: err instanceof Error ? err.message : 'Failed to change PIN' })
     } finally {
@@ -368,7 +368,7 @@ export function SettingsClient(): React.ReactElement {
       {/* Moderator PIN */}
       <section>
         <h2 className="text-white font-semibold mb-1">Moderator PIN</h2>
-        <p className="text-text-muted text-sm mb-4">4-digit PIN used by the moderator to access the control panel.</p>
+        <p className="text-text-muted text-sm mb-4">4-digit PIN for this quiz's moderator panel. Defaults to <span className="font-mono text-white/70">1234</span> if not changed. Set it before launching.</p>
         <form onSubmit={handleChangePin} className="space-y-4 max-w-lg">
           <div className="space-y-1.5">
             <Label htmlFor="new-pin">New PIN (4 digits)</Label>

@@ -16,6 +16,7 @@ model Quiz {
   status               String    @default("draft") // draft | ready | active | completed
   defaultAudienceLevel String    @default("medium") // low | medium | high
   areaName             String?   // Name of the area (e.g. "Lagos East"). Null for global ADMIN quizzes
+  moderatorPin         String    @default("1234")  // Per-quiz moderator PIN (4 digits)
   createdAt            DateTime  @default(now())
   updatedAt            DateTime  @updatedAt
   deletedAt            DateTime?
@@ -60,6 +61,7 @@ model Round {
   timerSeconds           Int
   pointsPerQuestion      Int
   bonusPointsPerQuestion Int       @default(5)
+  isQualifier            Boolean   @default(false) // Qualifier rounds skip +3 SV reserve requirement
   status                 String    @default("pending") // pending | active | completed
   audienceLevel          String    @default("medium") // low | medium | high
   createdAt              DateTime  @default(now())

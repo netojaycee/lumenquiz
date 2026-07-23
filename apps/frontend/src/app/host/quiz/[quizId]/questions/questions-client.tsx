@@ -37,7 +37,7 @@ interface QuestionFormState {
   type:          QuestionType
   text:          string
   difficulty:    QuestionDifficulty
-  points:        number
+  points:        number | ''
   correctAnswer: string
   aliases:       string
   clues:         string[]   // ordered clue strings for Clue Reveal mode
@@ -184,7 +184,7 @@ export function QuestionsClient(): React.ReactElement {
       type:          form.type,
       text:          form.text.trim(),
       difficulty:    form.difficulty,
-      points:        Number(form.points),
+      points:        Number(form.points) || 1,
       correctAnswer: isMCQ
         ? (form.options.find((o) => o.isCorrect)?.label ?? '')
         : form.correctAnswer.trim(),
@@ -648,9 +648,10 @@ export function QuestionsClient(): React.ReactElement {
               id="q-pts"
               type="number"
               min={1}
-              max={100}
+              max={1000}
+              placeholder="e.g. 10"
               value={form.points}
-              onChange={(e) => setForm((f) => ({ ...f, points: Number(e.target.value) }))}
+              onChange={(e) => setForm((f) => ({ ...f, points: e.target.value === '' ? '' : Number(e.target.value) }))}
             />
           </div>
 

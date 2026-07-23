@@ -213,10 +213,11 @@ const MODES: Record<GameMode, ModeInfo> = {
 interface RoundFormState {
   name: string
   gameMode: GameMode
-  questionCount: number
-  timerSeconds: number
-  pointsPerQuestion: number
-  bonusPointsPerQuestion: number
+  questionCount: number | ''
+  timerSeconds: number | ''
+  pointsPerQuestion: number | ''
+  bonusPointsPerQuestion: number | ''
+  isQualifier: boolean
 }
 
 const AVAILABLE_MODES = Object.fromEntries(
@@ -225,7 +226,6 @@ const AVAILABLE_MODES = Object.fromEntries(
 
 function defaultForm(mode = GameMode.BLITZ): RoundFormState {
   const safeMode = AVAILABLE_MODES[mode] ? mode : GameMode.BLITZ
-
   const m = MODES[safeMode]
   return {
     name: '',
@@ -234,6 +234,7 @@ function defaultForm(mode = GameMode.BLITZ): RoundFormState {
     timerSeconds: m.defaultTimer,
     pointsPerQuestion: m.defaultPts,
     bonusPointsPerQuestion: 5,
+    isQualifier: false,
   }
 }
 
@@ -274,6 +275,7 @@ export function RoundsClient(): React.ReactElement {
       timerSeconds: round.timerSeconds,
       pointsPerQuestion: round.pointsPerQuestion,
       bonusPointsPerQuestion: round.bonusPointsPerQuestion ?? 5,
+      isQualifier: round.isQualifier ?? false,
     })
     setFormError(null)
     setSheetOpen(true)
@@ -287,6 +289,7 @@ export function RoundsClient(): React.ReactElement {
       timerSeconds: m.defaultTimer,
       pointsPerQuestion: m.defaultPts,
       bonusPointsPerQuestion: mode === GameMode.TILE_BLITZ ? 5 : f.bonusPointsPerQuestion,
+      isQualifier: mode !== GameMode.BLITZ ? false : f.isQualifier,
     }))
   }
 
@@ -297,10 +300,11 @@ export function RoundsClient(): React.ReactElement {
     const payload = {
       name: form.name.trim() || undefined,
       gameMode: form.gameMode,
-      questionCount: Number(form.questionCount),
-      timerSeconds: Number(form.timerSeconds),
-      pointsPerQuestion: Number(form.pointsPerQuestion),
-      bonusPointsPerQuestion: Number(form.bonusPointsPerQuestion),
+      questionCount: Number(form.questionCount) || 1,
+      timerSeconds: Number(form.timerSeconds) || 5,
+      pointsPerQuestion: Number(form.pointsPerQuestion) || 1,
+      bonusPointsPerQuestion: Number(form.bonusPointsPerQuestion) || 1,
+      isQualifier: form.isQualifier,
     }
     try {
       if (editRound) {
@@ -418,9 +422,11 @@ export function RoundsClient(): React.ReactElement {
                         </span>
                       )}
                     </div>
-                    <p className="text-text-muted mt-0.5 text-xs">
-                      {info?.label} · {qCount} Q · {round.timerSeconds}s · {round.pointsPerQuestion}{' '}
-                      pts
+                    <p className="text-text-muted mt-0.5 text-xs flex items-center gap-1.5 flex-wrap">
+                      {info?.label} · {qCount} Q · {round.timerSeconds}s · {round.pointsPerQuestion} pts
+                      {round.isQualifier && (
+                        <span className="text-[10px] bg-yellow-500/20 text-yellow-400 rounded px-1 py-0.5 font-semibold uppercase tracking-wider">Qualifier</span>
+                      )}
                     </p>
                   </div>
 
@@ -518,8 +524,9 @@ export function RoundsClient(): React.ReactElement {
                 type="number"
                 min={1}
                 max={50}
+                placeholder="e.g. 10"
                 value={form.questionCount}
-                onChange={(e) => setForm((f) => ({ ...f, questionCount: Number(e.target.value) }))}
+                onChange={(e) => setForm((f) => ({ ...f, questionCount: e.target.value === '' ? '' : Number(e.target.value) }))}
               />
             </div>
             <div className="space-y-1.5">
@@ -529,8 +536,9 @@ export function RoundsClient(): React.ReactElement {
                 type="number"
                 min={5}
                 max={300}
+                placeholder="e.g. 30"
                 value={form.timerSeconds}
-                onChange={(e) => setForm((f) => ({ ...f, timerSeconds: Number(e.target.value) }))}
+                onChange={(e) => setForm((f) => ({ ...f, timerSeconds: e.target.value === '' ? '' : Number(e.target.value) }))}
               />
             </div>
             <div className="space-y-1.5">
@@ -539,11 +547,10 @@ export function RoundsClient(): React.ReactElement {
                 id="pts"
                 type="number"
                 min={1}
-                max={100}
+                max={1000}
+                placeholder="e.g. 10"
                 value={form.pointsPerQuestion}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, pointsPerQuestion: Number(e.target.value) }))
-                }
+                onChange={(e) => setForm((f) => ({ ...f, pointsPerQuestion: e.target.value === '' ? '' : Number(e.target.value) }))}
               />
             </div>
           </div>
@@ -556,13 +563,32 @@ export function RoundsClient(): React.ReactElement {
                 id="bonus-pts"
                 type="number"
                 min={1}
-                max={100}
+                max={1000}
+                placeholder="e.g. 5"
                 value={form.bonusPointsPerQuestion}
                 onChange={(e) =>
-                  setForm((f) => ({ ...f, bonusPointsPerQuestion: Number(e.target.value) }))
+                  setForm((f) => ({ ...f, bonusPointsPerQuestion: e.target.value === '' ? '' : Number(e.target.value) }))
                 }
               />
             </div>
+          )}
+
+          {/* Qualifier toggle — blitz only */}
+          {form.gameMode === GameMode.BLITZ && (
+            <label className="flex items-start gap-3 cursor-pointer group">
+              <input
+                type="checkbox"
+                checked={form.isQualifier}
+                onChange={(e) => setForm((f) => ({ ...f, isQualifier: e.target.checked }))}
+                className="mt-0.5 h-4 w-4 rounded border-border accent-blitz-accent cursor-pointer"
+              />
+              <div>
+                <span className="text-sm font-medium text-white">Qualifier Round</span>
+                <p className="text-xs text-text-muted mt-0.5">
+                  Serves exactly the number of questions set — no +3 Sudden Victory reserve. All sessions of this quiz will receive the same questions.
+                </p>
+              </div>
+            </label>
           )}
 
           {formError && (

@@ -219,10 +219,10 @@ export default function HostDashboardPage(): React.ReactElement {
             </select>
           )}
           {/* TODO: remove seed button before final release */}
-          <Button variant="ghost" onClick={handleSeed} disabled={seeding} title="Seed sample quiz data (dev only)">
+          {/* <Button variant="ghost" onClick={handleSeed} disabled={seeding} title="Seed sample quiz data (dev only)">
             {seeding ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <FlaskConical className="h-4 w-4 mr-2" />}
             Seed
-          </Button>
+          </Button> */}
           <Button onClick={openNewDialog}>
             <Plus className="h-4 w-4 mr-2" />
             New Quiz

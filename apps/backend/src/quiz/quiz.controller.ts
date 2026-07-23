@@ -123,6 +123,20 @@ export class QuizController {
     return this.quizService.regenerateJoinCode(quizId, teamId)
   }
 
+  // ─── Moderator PIN ────────────────────────────────────────────────────────
+
+  @Patch(':id/moderator-pin')
+  @HttpCode(200)
+  async updateModeratorPin(
+    @Param('id') quizId: string,
+    @Body() dto: { newPin: string },
+  ) {
+    if (!/^\d{4}$/.test(dto.newPin)) {
+      throw new BadRequestException('PIN must be exactly 4 digits')
+    }
+    return this.quizService.updateModeratorPin(quizId, dto.newPin)
+  }
+
   // ─── Rounds ───────────────────────────────────────────────────────────────
 
   @Post(':id/rounds')

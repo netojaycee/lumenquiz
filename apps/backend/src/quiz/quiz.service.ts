@@ -253,6 +253,7 @@ export class QuizService {
         timerSeconds: dto.timerSeconds,
         pointsPerQuestion: dto.pointsPerQuestion,
         bonusPointsPerQuestion: dto.bonusPointsPerQuestion,
+        isQualifier: dto.isQualifier ?? false,
       },
     })
   }
@@ -268,8 +269,18 @@ export class QuizService {
         timerSeconds: dto.timerSeconds,
         pointsPerQuestion: dto.pointsPerQuestion,
         bonusPointsPerQuestion: dto.bonusPointsPerQuestion,
+        ...(dto.isQualifier !== undefined && { isQualifier: dto.isQualifier }),
       },
     })
+  }
+
+  async updateModeratorPin(quizId: string, newPin: string): Promise<{ ok: boolean }> {
+    await this.assertQuizExists(quizId)
+    await this.prisma.quiz.update({
+      where: { id: quizId },
+      data: { moderatorPin: newPin },
+    })
+    return { ok: true }
   }
 
   async deleteRound(quizId: string, roundId: string) {

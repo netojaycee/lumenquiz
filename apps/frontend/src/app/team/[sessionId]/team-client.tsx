@@ -28,6 +28,34 @@ import { TEAM_EVENTS, CONNECTION_EVENTS, JOIN_EVENTS } from '@apoquiz/socket-eve
 import { serverNow } from '@/lib/clock'
 import { ReconnectOverlay } from '@/components/shared/ReconnectOverlay'
 import { SessionStatus, QuestionType } from '@apoquiz/shared-types'
+import type { MCQOption } from '@apoquiz/shared-types'
+
+// Deterministic Fisher-Yates shuffle seeded by a string.
+// Same seed always produces the same order so a team sees consistent options on refresh.
+function seededShuffle<T>(arr: T[], seed: string): T[] {
+  let h = 0
+  for (let i = 0; i < seed.length; i++) {
+    h = Math.imul(31, h) + seed.charCodeAt(i) | 0
+  }
+  const rng = () => {
+    h ^= h << 13; h ^= h >> 17; h ^= h << 5
+    return (h >>> 0) / 0x100000000
+  }
+  const out = [...arr]
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]]
+  }
+  return out
+}
+
+// Returns options shuffled for a specific team+question, with display labels A/B/C/D re-mapped.
+// Submitting still uses the original opt.label so backend grading is unaffected.
+function shuffleOptionsForTeam(options: MCQOption[], teamId: string, questionId: string): Array<MCQOption & { displayLabel: string }> {
+  const LABELS = ['A', 'B', 'C', 'D']
+  const shuffled = seededShuffle(options, `${teamId}:${questionId}`)
+  return shuffled.map((opt, i) => ({ ...opt, displayLabel: LABELS[i] ?? opt.label }))
+}
 import type { CumulativeScoresPayload } from '@apoquiz/socket-events'
 
 type ConnectPhase = 'checking' | 'connecting' | 'connected' | 'failed'
@@ -694,7 +722,7 @@ export function TeamClient(): React.ReactElement {
                     <>
                       {isMCQ && question?.options && (
                         <div className="space-y-3">
-                          {question.options.map((opt) => (
+                          {shuffleOptionsForTeam(question.options, teamId ?? '', question.id).map((opt) => (
                             <button
                               key={opt.id}
                               onClick={() => handleMCQSelect(opt.label)}
@@ -705,7 +733,7 @@ export function TeamClient(): React.ReactElement {
                                   : 'border-white/10 bg-white/[0.03] text-white/70 hover:text-white',
                               )}
                             >
-                              <span className="mr-2 font-mono font-black">{opt.label}.</span>
+                              <span className="mr-2 font-mono font-black">{opt.displayLabel}.</span>
                               {opt.text}
                             </button>
                           ))}
@@ -942,7 +970,7 @@ export function TeamClient(): React.ReactElement {
               {/* MCQ options */}
               {isMCQ && question.options && !timerElapsed && (
                 <div className="flex-1 space-y-2.5">
-                  {question.options.map((opt, idx) => {
+                  {shuffleOptionsForTeam(question.options, teamId ?? '', question.id).map((opt, idx) => {
                     const isInteractive = !tileBlitzActiveTeamId || isTileBlitzTurn
                     const isSelected = submittedAnswer === opt.label
                     return (
@@ -974,7 +1002,7 @@ export function TeamClient(): React.ReactElement {
                             ? { borderColor: teamColorHex, backgroundColor: `${teamColorHex}20`, color: teamColorHex }
                             : { borderColor: 'rgba(255,255,255,0.12)', color: 'rgba(255,255,255,0.4)' }}
                         >
-                          {opt.label}
+                          {opt.displayLabel}
                         </span>
                         <span className={cn('flex-1 text-base font-semibold', isSelected ? 'text-white' : 'text-white/65')}>
                           {opt.text}

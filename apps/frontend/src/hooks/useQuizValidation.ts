@@ -22,11 +22,12 @@ function requiredQuestions(
   gameMode: string,
   questionCount: number,
   teamCount: number,
+  isQualifier: boolean,
 ): { required: number; isPerTeam: boolean } {
   if (gameMode === 'tile_blitz' || gameMode === 'ultimate_challenge') {
     return { required: questionCount * teamCount, isPerTeam: true }
   }
-  if (gameMode === 'blitz') {
+  if (gameMode === 'blitz' && !isQualifier) {
     return { required: questionCount + 3, isPerTeam: false }
   }
   return { required: questionCount, isPerTeam: false }
@@ -56,14 +57,15 @@ export function useQuizValidation(quiz: QuizForValidation | null | undefined): Q
       }
 
       if (teamCount > 0) {
-        const { required, isPerTeam } = requiredQuestions(mode, needed, teamCount)
+        const qualifier = !!(round as Round & { isQualifier?: boolean }).isQualifier
+        const { required, isPerTeam } = requiredQuestions(mode, needed, teamCount, qualifier)
         if (actual < required) {
           if (isPerTeam) {
             warnings.push(
               `"${label}" (${mode.replace(/_/g, ' ')}) needs ${required} questions ` +
               `(${teamCount} teams × ${needed}) — only ${actual} added`,
             )
-          } else if (mode === 'blitz') {
+          } else if (mode === 'blitz' && !qualifier) {
             warnings.push(
               `"${label}" (blitz) needs ${required} questions (${needed} for the round + 3 reserve for Sudden Victory) — only ${actual} added`,
             )

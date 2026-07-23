@@ -57,6 +57,7 @@ export interface Round {
   timerSeconds: number
   pointsPerQuestion: number
   bonusPointsPerQuestion: number
+  isQualifier: boolean
   status: string
   audienceLevel: AudienceEngagementLevel
   createdAt: string

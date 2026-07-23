@@ -11,7 +11,6 @@ import {
 import { randomBytes } from 'crypto'
 import { Server, Socket } from 'socket.io'
 import { PrismaService } from '../prisma/prisma.service'
-import { AuthService } from '../auth/auth.service'
 import {
   activeSessions,
   type SessionCache,
@@ -109,7 +108,6 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly auth: AuthService,
     private readonly network: NetworkService,
   ) {}
 
@@ -426,7 +424,16 @@ export class QuizGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     payload: JoinPayload,
     sessionId: string,
   ): Promise<void> {
-    if (!payload.pin || !this.auth.validateModeratorPin(payload.pin)) {
+    const sessionCache = activeSessions.get(sessionId)
+    let expectedPin = '1234'
+    if (sessionCache?.quizId) {
+      const quiz = await this.prisma.quiz.findUnique({
+        where: { id: sessionCache.quizId },
+        select: { moderatorPin: true },
+      })
+      expectedPin = quiz?.moderatorPin ?? '1234'
+    }
+    if (!payload.pin || payload.pin !== expectedPin) {
       client.emit(SERVER_EVENTS.ERROR, { code: 'INVALID_PIN', message: 'Invalid moderator PIN' })
       return
     }
