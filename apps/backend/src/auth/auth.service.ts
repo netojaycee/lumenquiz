@@ -140,11 +140,11 @@ export class AuthService {
     const targetArea = sender.role === 'ADMIN' ? dto.areaName : sender.areaName
     const targetEmail = dto.email.toLowerCase()
 
-    // Validate email isn't already taken in User table
+    // Allow re-invite if the existing user never completed setup (no password set)
     const existingUser = await this.prisma.user.findUnique({
       where: { email: targetEmail },
     })
-    if (existingUser) {
+    if (existingUser && existingUser.password !== null) {
       throw new ConflictException('A user with this email address already exists')
     }
 
@@ -219,6 +219,80 @@ export class AuthService {
     await this.emailProvider.sendMail({
       to: targetEmail,
       subject: `Invitation to join Apo Quiz as ${dto.role}`,
+      html: htmlBody,
+    })
+
+    return { ok: true }
+  }
+
+  async resendInvite(email: string, sender: { role: string; areaName?: string | null }): Promise<{ ok: boolean }> {
+    const targetEmail = email.toLowerCase()
+
+    const invite = await this.prisma.invitation.findUnique({
+      where: { email: targetEmail },
+    })
+
+    if (!invite || invite.usedAt) {
+      throw new BadRequestException('No pending invitation found for this email')
+    }
+
+    if (sender.role !== 'ADMIN' && invite.areaName !== sender.areaName) {
+      throw new BadRequestException('You can only resend invitations within your own area')
+    }
+
+    const token = crypto.randomBytes(32).toString('hex')
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000)
+
+    await this.prisma.invitation.update({
+      where: { email: targetEmail },
+      data: { token, expiresAt },
+    })
+
+    const appDomain = process.env.PUBLIC_URL || 'http://localhost:3000'
+    const inviteLink = `${appDomain}/host/setup-password?token=${token}`
+
+    const htmlBody = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          body { font-family: sans-serif; background-color: #f4f5f7; margin: 0; padding: 0; color: #333; }
+          .container { max-width: 600px; margin: 40px auto; background: #fff; border-radius: 8px; overflow: hidden; border: 1px solid #e1e4e8; }
+          .header { background: linear-gradient(135deg, #4f46e5, #3b82f6); padding: 30px; text-align: center; color: #fff; }
+          .header h1 { margin: 0; font-size: 24px; }
+          .content { padding: 40px 30px; line-height: 1.6; }
+          .btn { background-color: #4f46e5; color: #ffffff !important; padding: 14px 28px; text-decoration: none; font-weight: bold; border-radius: 6px; display: inline-block; margin: 20px 0; }
+          .details { background-color: #f8fafc; border-left: 4px solid #4f46e5; padding: 15px; margin: 20px 0; }
+          .footer { background-color: #f8fafc; padding: 20px; text-align: center; font-size: 12px; color: #64748b; border-top: 1px solid #e1e4e8; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="header"><h1>Apo Quiz Platform</h1></div>
+          <div class="content">
+            <p>Hello <strong>${invite.name}</strong>,</p>
+            <p>Your invitation to join the Apo Quiz Platform as a <strong>${invite.role}</strong> for <strong>${invite.areaName || 'Global/Admin'}</strong> has been resent with a new link.</p>
+            <p>Please click the button below to set up your account password and activate your access.</p>
+            <div style="text-align: center;">
+              <a href="${inviteLink}" class="btn">Set Up Password</a>
+            </div>
+            <div class="details">
+              <strong>Invitation Details:</strong><br>
+              • Area: ${invite.areaName || 'Global/Admin'}<br>
+              • Role: ${invite.role}<br>
+              • Link expiration: 24 hours
+            </div>
+          </div>
+          <div class="footer">Sent by Apo Quiz Platform &copy; 2026</div>
+        </div>
+      </body>
+      </html>
+    `
+
+    await this.emailProvider.sendMail({
+      to: targetEmail,
+      subject: `Your Apo Quiz invitation has been resent`,
       html: htmlBody,
     })
 
